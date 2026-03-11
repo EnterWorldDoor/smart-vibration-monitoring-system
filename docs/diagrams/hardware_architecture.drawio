@@ -1,0 +1,59 @@
+<mxfile host="app.diagrams.net">
+  <diagram name="Hardware Architecture">
+    <mxGraphModel dx="1200" dy="800" grid="1" gridSize="10">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+
+        <!-- Sensor -->
+        <mxCell id="sensor" value="ADXL345&#xa;Vibration Sensor" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;" vertex="1" parent="1">
+          <mxGeometry x="80" y="300" width="140" height="80" as="geometry"/>
+        </mxCell>
+
+        <!-- STM32 -->
+        <mxCell id="stm32" value="STM32F4&#xa;Signal Processing&#xa;FFT Analysis" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;" vertex="1" parent="1">
+          <mxGeometry x="260" y="300" width="180" height="100" as="geometry"/>
+        </mxCell>
+
+        <!-- ESP32 -->
+        <mxCell id="esp32" value="ESP32&#xa;WiFi Communication&#xa;MQTT Client" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;" vertex="1" parent="1">
+          <mxGeometry x="480" y="300" width="180" height="100" as="geometry"/>
+        </mxCell>
+
+        <!-- Raspberry Pi -->
+        <mxCell id="rpi" value="Raspberry Pi 4&#xa;Edge Gateway&#xa;MQTT Broker&#xa;Edge AI" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;" vertex="1" parent="1">
+          <mxGeometry x="720" y="260" width="200" height="140" as="geometry"/>
+        </mxCell>
+
+        <!-- Camera -->
+        <mxCell id="camera" value="Future Camera Module&#xa;USB Camera&#xa;Vision AI" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;" vertex="1" parent="1">
+          <mxGeometry x="720" y="440" width="200" height="100" as="geometry"/>
+        </mxCell>
+
+        <!-- Laptop -->
+        <mxCell id="laptop" value="Laptop Data Platform&#xa;Docker Containers&#xa;Kafka / Spark / InfluxDB" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;" vertex="1" parent="1">
+          <mxGeometry x="980" y="280" width="220" height="140" as="geometry"/>
+        </mxCell>
+
+        <!-- Connections -->
+
+        <mxCell id="c1" edge="1" parent="1" source="sensor" target="stm32" style="endArrow=block;">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="c2" edge="1" parent="1" source="stm32" target="esp32" style="endArrow=block;">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="c3" edge="1" parent="1" source="esp32" target="rpi" style="endArrow=block;">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="c4" edge="1" parent="1" source="rpi" target="laptop" style="endArrow=block;">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
