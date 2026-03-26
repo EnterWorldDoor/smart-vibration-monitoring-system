@@ -1,0 +1,2 @@
+source C:/project/ADXL345_ESP_VALI/build/gdbinit/symbols
+source C:/project/ADXL345_ESP_VALI/build/gdbinit/connect

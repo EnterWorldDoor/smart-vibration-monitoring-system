@@ -1,0 +1,27 @@
+<mxfile>
+  <diagram name="Software Architecture">
+    <mxGraphModel>
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+
+        <mxCell id="2" value="FreeRTOS\n任务调度\n驱动层" vertex="1" parent="1">
+          <mxGeometry x="50" y="200" width="160" height="80" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="3" value="Linux驱动\nI2C/SPI/GPIO\n字符设备" vertex="1" parent="1">
+          <mxGeometry x="250" y="200" width="180" height="80" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="4" value="MQTT/Kafka\n数据中间件" vertex="1" parent="1">
+          <mxGeometry x="470" y="200" width="160" height="80" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="5" value="Spring Boot\nREST/WebSocket" vertex="1" parent="1">
+          <mxGeometry x="670" y="200" width="180" height="80" as="geometry"/>
+        </mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
