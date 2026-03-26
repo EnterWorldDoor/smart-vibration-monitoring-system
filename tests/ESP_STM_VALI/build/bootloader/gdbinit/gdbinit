@@ -1,0 +1,2 @@
+source C:/project/ESP_STM_VALI/build/bootloader/gdbinit/symbols
+source C:/project/ESP_STM_VALI/build/bootloader/gdbinit/connect

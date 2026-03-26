@@ -1,0 +1,35 @@
+<mxfile>
+  <diagram name="Data Flow">
+    <mxGraphModel>
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+
+        <mxCell id="2" value="STM32采集\nADXL345振动" vertex="1" parent="1">
+          <mxGeometry x="50" y="200" width="140" height="60" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="3" value="ESP32\nFFT + AI检测" vertex="1" parent="1">
+          <mxGeometry x="220" y="200" width="140" height="60" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="4" value="树莓派网关\nMQTT + Linux驱动" vertex="1" parent="1">
+          <mxGeometry x="390" y="200" width="180" height="60" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="5" value="Kafka（Docker）" vertex="1" parent="1">
+          <mxGeometry x="600" y="200" width="140" height="60" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="6" value="Spark/Flink" vertex="1" parent="1">
+          <mxGeometry x="770" y="200" width="140" height="60" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="7" value="Web系统" vertex="1" parent="1">
+          <mxGeometry x="940" y="200" width="120" height="60" as="geometry"/>
+        </mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

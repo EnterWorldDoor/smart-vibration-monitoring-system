@@ -1,0 +1,13 @@
+# Target labels
+ bootloader
+# Source files and their labels
+C:/project/ADXL345_ESP_VALI/build/CMakeFiles/bootloader
+C:/project/ADXL345_ESP_VALI/build/CMakeFiles/bootloader.rule
+C:/project/ADXL345_ESP_VALI/build/CMakeFiles/bootloader-complete.rule
+C:/project/ADXL345_ESP_VALI/build/bootloader-prefix/src/bootloader-stamp/bootloader-build.rule
+C:/project/ADXL345_ESP_VALI/build/bootloader-prefix/src/bootloader-stamp/bootloader-configure.rule
+C:/project/ADXL345_ESP_VALI/build/bootloader-prefix/src/bootloader-stamp/bootloader-download.rule
+C:/project/ADXL345_ESP_VALI/build/bootloader-prefix/src/bootloader-stamp/bootloader-install.rule
+C:/project/ADXL345_ESP_VALI/build/bootloader-prefix/src/bootloader-stamp/bootloader-mkdir.rule
+C:/project/ADXL345_ESP_VALI/build/bootloader-prefix/src/bootloader-stamp/bootloader-patch.rule
+C:/project/ADXL345_ESP_VALI/build/bootloader-prefix/src/bootloader-stamp/bootloader-update.rule
