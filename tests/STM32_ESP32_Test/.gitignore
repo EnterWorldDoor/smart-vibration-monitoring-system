@@ -1,0 +1,9 @@
+ #子目录专属屏蔽
+ build/
+ .vscode/
+ sdkconfig
+ Debug/
+ Release/
+ .settings/
+ .DS_Store
+ Thumbs.db

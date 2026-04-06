@@ -1,0 +1,48 @@
+# ===================== ESP32 工程通用屏蔽 =====================
+# 编译输出目录
+build/
+# ESP-IDF 配置文件
+sdkconfig
+sdkconfig.old
+# VS Code 环境配置（仅保留团队共享配置）
+.vscode/
+!.vscode/extensions.json
+!.vscode/settings.json
+# ESP-IDF 临时/日志文件
+*.log
+*.pyc
+__pycache__/
+*.bin
+*.elf
+*.map
+flasher_args.json
+# 系统临时文件
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+
+# ===================== STM32 (Keil/CubeIDE) 工程屏蔽 =====================
+# 编译输出目录
+Debug/
+Release/
+Objects/
+List/
+# CubeIDE 工程配置
+.settings/
+.cproject
+.project
+.launch
+# Keil 工程文件
+*.uvprojx
+*.uvoptx
+*.uvproj
+# STM32CubeMX 生成的临时文件
+*.ioc
+*.mxproject
+# 其他IDE临时文件
+.settings/
+*.tmp
+# 系统/IDE缓存
+.DS_Store
+Thumbs.db
