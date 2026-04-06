@@ -95,6 +95,21 @@ Spring Boot + Vue
 - WiFi上传
 - UART与STM32通信
 
+
+✅ 核心模块
+- adxl345
+- sensor_service
+- dsp（FFT/RMS）
+- ai_service
+✅ 企业增强模块（必须加）
+- data_manager ⭐
+- fault_diagnosis ⭐
+- log_system ⭐
+- config_manager ⭐
+✅ 高级加分模块
+- ota_update
+- time_sync
+- system_monitor
 ---
 
 ## 5.3 树莓派（网关 + Linux驱动）
