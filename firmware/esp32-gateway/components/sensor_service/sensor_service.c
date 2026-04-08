@@ -8,7 +8,7 @@
  #include "adxl345.h"
  #include "ringbuf.h"
  #include "global_error.h"
- #include "global_log.h"
+ #include "log_system.h"
  #include "esp_log.h"
  #include "esp_timer.h"
  #include "time_sync.h"     /* 获取全局时间戳 */
@@ -41,7 +41,7 @@
 
       /* 读取 ADXL345 数据 */
       int ret = adxl345_read_g(g_adxl, &sample.x, &sample.y, &sample.z);
-      if (ret == ERR_OK) {
+      if (ret == APP_ERR_OK) {
          sample.timestamp_us = time_sync_get_timestamp_us(); /* 获取全局时间戳 */
          /* 将样本写入环形缓冲区 */
          ringbuf_push(&g_ringbuf, (uint8_t *)&sample, sizeof(sample));
@@ -51,7 +51,7 @@
             g_callback(&sample);
          } 
          } else {
-            LOG_ERROR("Failed to read ADXL345 data: %d", ret);
+            LOG_ERROR("SENSOR", "Failed to read ADXL345 data: %d", ret);
          }
 
          /* 精确延时 */
@@ -67,7 +67,7 @@
  int sensor_service_init(int sample_rate_hz, int buffer_size)
  {
      if (sample_rate_hz <= 0 || buffer_size <= 0) {
-         return ERR_INVALID_PARAM;
+         return APP_ERR_INVALID_PARAM;
      }
      g_sample_interval_ms = 1000 / sample_rate_hz;
 
@@ -75,65 +75,67 @@
      /* 注意: I2C 初始化应在主函数中完成, 这里假设 I2C0 已经初始化配置 */
      g_adxl = adxl345_init(0, 0x53, ADXL345_RANGE_16G, ADXL345_RATE_400);
      if (!g_adxl) {
-         LOG_ERROR("Failed to initialize ADXL345");
-         return ERR_I2C_DEV_NOT_FOUND;
+         LOG_ERROR("SENSOR", "Failed to initialize ADXL345");
+         return APP_ERR_I2C_DEV_NOT_FOUND;
      }
 
      /* 自检 */
-     adxl345_self_test(g_adxl);
+    adxl345_self_test(g_adxl);
 
      /* 分配环形缓冲区存储 */
      size_t ringbuf_size = sizeof(struct vib_sample) * buffer_size;
      g_ringbuf_storage = malloc(ringbuf_size);
      if (!g_ringbuf_storage) {
-         LOG_ERROR("Failed to allocate memory for ring buffer");
+         LOG_ERROR("SENSOR", "Failed to allocate memory for ring buffer");
          adxl345_deinit(g_adxl);
-         return ERR_NO_MEM;
+         return APP_ERR_NO_MEM;
      }
        /* 初始化环形缓冲区 */
        ringbuf_init(&g_ringbuf, g_ringbuf_storage, ringbuf_size, true); /* 覆盖旧数据 */
-       LOG_INFO("Sensor service initialized with sample rate: %d Hz, buffer size: %d", sample_rate_hz, buffer_size);
-       return ERR_OK;
+       LOG_INFO("SENSOR", "Sensor service initialized with sample rate: %d Hz, buffer size: %d", sample_rate_hz, buffer_size);
+       return APP_ERR_OK;
  }
 
  int sensor_service_start(void)
  {
-   if (g_running) return ERR_BUSY; /* 已经在运行 */
+   if (g_running) return APP_ERR_BUSY; /* 已经在运行 */
    g_running = true;
    BaseType_t ret = xTaskCreate(sensor_task, "sensor_task", 
                                     SENSOR_TASK_STACK_SIZE, NULL, SENSOR_TASK_PRIORITY, &g_task_handle);
    if (ret != pdPASS) {
-      LOG_ERROR("Failed to create sensor task");
+      LOG_ERROR("SENSOR", "Failed to create sensor task");
       g_running = false;
-      return ERR_GENERAL;
+      return APP_ERR_GENERAL;
    }
-   LOG_INFO("Sensor service started");
-   return ERR_OK;                                
+   LOG_INFO("SENSOR", "Sensor service started");
+   return APP_ERR_OK;                                
  }
 
  int sensor_service_stop(void)
  {
-   if (!g_running) return ERR_OK; /* 已经停止 */
+   if (!g_running) return APP_ERR_OK; /* 已经停止 */
    g_running = false;
    if (g_task_handle) {
       vTaskDelete(g_task_handle);
       g_task_handle = NULL;
    }
-   ringbuf_reset(&g_ringbuf); /* 清空缓冲区 */
-   LOG_INFO("Sensor service stopped");
-   return ERR_OK;
+   /* 清空缓冲区 */
+   g_ringbuf.head = 0;
+   g_ringbuf.tail = 0;
+   LOG_INFO("SENSOR", "Sensor service stopped");
+   return APP_ERR_OK;
  }
 
  int sensor_service_fetch(struct vib_sample *out)
  {
-   if (!out) return ERR_INVALID_PARAM;
+   if (!out) return APP_ERR_INVALID_PARAM;
    size_t len = ringbuf_pop(&g_ringbuf, (uint8_t *)out, sizeof(*out));
-   return (len == sizeof(*out) ? ERR_OK : ERR_NO_MEM); /* 没有数据可读 */
+   return (len == sizeof(*out) ? APP_ERR_OK : APP_ERR_NO_MEM); /* 没有数据可读 */
  }
 
  int sensor_service_fetch_block(struct vib_sample *out, int max_count)
  {
-   if (!out || max_count <= 0) return ERR_INVALID_PARAM;
+   if (!out || max_count <= 0) return APP_ERR_INVALID_PARAM;
    size_t total =0;
    while (total < max_count) {
       size_t len = ringbuf_pop(&g_ringbuf, (uint8_t *)&out[total], sizeof(struct vib_sample));
@@ -148,5 +150,5 @@
  int sensor_service_register_callback(sensor_data_ready_cb_t cb)
  {
    g_callback = cb;
-   return ERR_OK;
+   return APP_ERR_OK;
  }

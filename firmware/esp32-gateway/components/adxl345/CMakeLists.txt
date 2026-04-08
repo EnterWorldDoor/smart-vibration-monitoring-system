@@ -2,5 +2,5 @@
 idf_component_register(
     SRCS "adxl345.c"
     INCLUDE_DIRS "."
-    REQUIRES driver common
+    REQUIRES driver common log_system
 )

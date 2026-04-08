@@ -2,5 +2,5 @@
 idf_component_register(
     SRCS "dsp.c"
     INCLUDE_DIRS "."
-    REQUIRES driver common
+    REQUIRES driver common log_system
 )

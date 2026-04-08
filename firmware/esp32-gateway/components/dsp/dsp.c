@@ -6,7 +6,7 @@
  */
 
  #include "dsp.h"
- #include "global_log.h"
+ #include "log_system.h"
  #include "global_error.h"
  #include <math.h>
  #include <string.h>
@@ -80,16 +80,16 @@
     g_fft_max_size = DSP_FFT_MAX_SIZE;
     g_fft_work = malloc(sizeof(complex_t) * g_fft_max_size);
     if (!g_fft_work) {
-        LOG_ERROR("Failed to allocate FFT work buffer");
-        return ERR_NO_MEM;
+        LOG_ERROR("DSP", "Failed to allocate FFT work buffer");
+        return APP_ERR_NO_MEM;
     }
-    LOG_INFO("DSP module initialized with FFT max size: %d", g_fft_max_size);
-    return ERR_OK;
+    LOG_INFO("DSP", "DSP module initialized with FFT max size: %d", g_fft_max_size);
+    return APP_ERR_OK;
  }
 
  int dsp_rms_compute(const float *input, int len, struct rms_result *out)
  {
-    if (!input || !out || len <= 0) return ERR_INVALID_PARAM;
+    if (!input || !out || len <= 0) return APP_ERR_INVALID_PARAM;
 
     double sum = 0.0, sum_sq = 0.0;
     float max_val = -1e9f, min_val = 1e9f;
@@ -102,15 +102,15 @@
     out->mean = (float)(sum / len);
     out->value = (float)sqrt(sum_sq / len);
     out->peak = (max_val > -min_val) ? max_val : min_val; /* 峰值取绝对值较大的那个 */
-    return ERR_OK;
+    return APP_ERR_OK;
  }
 
  int dsp_fft_compute(float *input, uint16_t fft_size, float sampling_rate, struct fft_result *out)
  {
     if (!input || !out || fft_size == 0 || (fft_size & (fft_size - 1)) != 0) {
-        return ERR_INVALID_PARAM;
+        return APP_ERR_INVALID_PARAM;
     }  
-    if (fft_size > DSP_FFT_MAX_SIZE) return ERR_INVALID_PARAM;
+    if (fft_size > DSP_FFT_MAX_SIZE) return APP_ERR_INVALID_PARAM;
 
     /* 准备复数数组 */
     for (uint16_t i = 0; i < fft_size; i++) {
@@ -143,37 +143,37 @@
         }
     }
 
-    return ERR_OK;
+    return APP_ERR_OK;
  }
 
  int dsp_fft_compute_3axis(const float *x_samples, const float *y_samples, const float *z_samples, uint16_t len,
-                           float smapling_rate, struct fft_result *out_x, struct fft_result *out_y, struct fft_result *out_z)
+                           float sampling_rate, struct fft_result *out_x, struct fft_result *out_y, struct fft_result *out_z)
  {
-    if (!x_samples || !y_samples || !z_samples) return ERR_INVALID_PARAM;
+    if (!x_samples || !y_samples || !z_samples) return APP_ERR_INVALID_PARAM;
 
     /* 复制输入以避免修改原数据(因为 FFT 会被破坏输入) */
     float *buf = malloc(sizeof(float) * len);
-    if (!buf) return ERR_NO_MEM;
+    if (!buf) return APP_ERR_NO_MEM;
 
     int ret;
     if (out_x) {
         memcpy(buf, x_samples, len * sizeof(float));
-        ret = dsp_fft_compute(buf, len, smapling_rate, out_x);
-        if (ret != ERR_OK) goto cleanup;
+        ret = dsp_fft_compute(buf, len, sampling_rate, out_x);
+        if (ret != APP_ERR_OK) goto cleanup;
     }
 
     if (out_y) {
         memcpy(buf, y_samples, len * sizeof(float));
-        ret = dsp_fft_compute(buf, len, smapling_rate, out_y);
-        if (ret != ERR_OK) goto cleanup;
+        ret = dsp_fft_compute(buf, len, sampling_rate, out_y);
+        if (ret != APP_ERR_OK) goto cleanup;
     }
 
     if (out_z) {
         memcpy(buf, z_samples, len * sizeof(float));
-        ret = dsp_fft_compute(buf, len, smapling_rate, out_z);
-        if (ret != ERR_OK) goto cleanup;
+        ret = dsp_fft_compute(buf, len, sampling_rate, out_z);
+        if (ret != APP_ERR_OK) goto cleanup;
     }
-    ret = ERR_OK;
+    ret = APP_ERR_OK;
 
     cleanup:
         free(buf);
