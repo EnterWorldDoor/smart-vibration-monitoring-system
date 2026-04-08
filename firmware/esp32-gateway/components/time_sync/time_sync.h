@@ -44,7 +44,7 @@ static inline int64_t time_sync_get_timestamp_ms(void)
  * time_sync_wait_sync - 等待 SNTP 时间同步完成(阻塞)
  * @timeout_ms: 等待超时时间 (单位: 毫秒), 若为 0 则无限等待
  * 
- * Return: 0 if synced, -ERR_TIMEOUT if timeout, negative error code on failure
+ * Return: 0 if synced, -APP_ERR_TIMEOUT if timeout, negative error code on failure
  */
 int time_sync_wait_sync(int timeout_ms);
 

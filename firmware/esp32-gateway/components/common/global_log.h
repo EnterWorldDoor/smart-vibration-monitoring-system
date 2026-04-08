@@ -17,4 +17,4 @@
 #define LOG_DEBUG(fmt, ...) ESP_LOGD(LOG_TAG, fmt, ##__VA_ARGS__)
 #define LOG_VERBOSE(fmt, ...) ESP_LOGV(LOG_TAG, fmt, ##__VA_ARGS__)
 
-#endif /* COMMON_LOG_H */
+#endif /* COMMON_GLOBAL_LOG_H */

@@ -52,7 +52,7 @@
   * data_manager_get_latest - 获取最新完整数据包 (非阻塞)
   * @out: 输出数据包指针
   * 
-  * Return: 0 on success, -ERR_NO_MEN if no packet available
+  * Return: 0 on success, -APP_ERR_NO_MEM if no packet available
   */
  int data_manager_get_latest(struct system_data_packet *out);
 
