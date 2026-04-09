@@ -8,7 +8,7 @@
  #define COMMON_GLOBAL_ERROR_H
 
 /* 成功 */
-#define APP_ERR_OK                  0
+#define APP_ERR_OK                      0
 
 /* 通用错误(-1 ~ -99 )*/
 #define APP_ERR_GENERAL                 -1
@@ -40,6 +40,14 @@
 /* 配置错误 (-500 ~ -599 ) */
 #define APP_ERR_CONFIG_LOAD_FAIL        -500
 #define APP_ERR_CONFIG_SAVE_FAIL        -501
+#define APP_ERR_CONFIG_NVS_OPEN         -502
+#define APP_ERR_CONFIG_NVS_READ         -503
+#define APP_ERR_CONFIG_NVS_WRITE        -504
+#define APP_ERR_CONFIG_NVS_COMMIT       -505
+#define APP_ERR_CONFIG_VALIDATION       -506
+#define APP_ERR_CONFIG_ENCRYPTION       -507
+#define APP_ERR_CONFIG_VERSION_MISMATCH -508
+#define APP_ERR_CONFIG_BACKUP_FAILED    -509
 
 /* 日志系统错误 (-600 ~ -699 ) */
 #define APP_ERR_LOG_INIT_FAIL           -600
