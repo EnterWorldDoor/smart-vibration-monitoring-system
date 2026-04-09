@@ -17,6 +17,7 @@
 ### 日志
 - 禁止 `printf`，使用 `log_system.h` 中的 `LOG_INFO`、`LOG_ERROR` 等宏。
 - 日志等级：ERROR（严重）、WARN（可恢复）、INFO（状态变化）、DEBUG（调试）。
+- 静止使用 'common/log.h',统一被 log_system.h 替代。
 
 ### 内存
 - 优先静态分配；动态分配必须注释释放位置。
@@ -33,6 +34,7 @@
 ### 配置管理
 - 所有配置管理都在 `config_manager.h` 中进行。
 - 配置参数必须在 `config_manager.h` 中定义，不能直接在代码中写。
+- 如果添加的模块需要配置参数，必须在 `config_manager.h` 中定义并注释。
 
 ## 模块模板
 
