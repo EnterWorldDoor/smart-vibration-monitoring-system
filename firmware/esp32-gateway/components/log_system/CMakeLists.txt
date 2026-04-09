@@ -3,6 +3,7 @@ idf_component_register(
   SRCS "log_system.c"
   INCLUDE_DIRS "."
   REQUIRES common driver freertos mqtt mbedtls
+  PRIV_REQUIRES unity
 )
 
 if(CONFIG_UNITY_ENABLE_BACKTRACE_ON_FAIL)
