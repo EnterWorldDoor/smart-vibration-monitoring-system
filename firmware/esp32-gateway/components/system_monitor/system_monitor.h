@@ -18,7 +18,10 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include <stddef.h>
 #include "global_error.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 /* ==================== 配置常量 ==================== */
 

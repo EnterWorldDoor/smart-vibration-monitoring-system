@@ -105,7 +105,7 @@ static void check_thresholds(const struct system_status *status)
     if (th->cpu_critical_percent > 0 && status->cpu.usage_percent >= th->cpu_critical_percent) {
         LOG_ERROR("MON", "CPU CRITICAL: %.1f%% >= %.1f%%",
                   status->cpu.usage_percent, th->cpu_critical_percent);
-        notify_alarm(MONITOR_ALARM_CPU_CRITICAL, status->cpu.usage_percent,
+        notify_alarm(MONITOR_ALARM_CPU_HIGH, status->cpu.usage_percent,
                      th->cpu_critical_percent);
     } else if (th->cpu_warn_percent > 0 && status->cpu.usage_percent >= th->cpu_warn_percent) {
         LOG_WARN("MON", "CPU WARNING: %.1f%% >= %.1f%%",
@@ -165,7 +165,7 @@ static void push_history(const struct system_status *status)
     g_mon.history_buf[idx].free_heap = status->mem.free_heap;
     g_mon.history_buf[idx].timestamp_s = (uint32_t)(status->uptime_ms / 1000ULL);
 
-    g_mon.head = (idx + 1) % g_mon.history_depth;
+    g_mon.history_head = (idx + 1) % g_mon.history_depth;
     if (g_mon.history_count < g_mon.history_depth) {
         g_mon.history_count++;
     }
@@ -264,7 +264,9 @@ static void collect_status(struct system_status *out)
             out->tasks[i].task_number = task_status_buf[i].xTaskNumber;
             out->tasks[i].stack_high_water_mark = uxTaskGetStackHighWaterMark(handle);
             out->tasks[i].stack_size = (handle)
-                                       ? uxTaskGetStackSize(handle) : 0;
+                                       ? (uint32_t)0 : 0;
+            /* TODO: ESP-IDF v5.5.3 移除了 uxTaskGetStackSize */
+            /* 可用 vTaskGetInfo() 获取任务信息，但需要额外配置 */
             if (out->tasks[i].stack_size > 0) {
                 out->tasks[i].stack_usage_percent =
                     100.0f * (1.0f - (float)out->tasks[i].stack_high_water_mark /
@@ -340,7 +342,7 @@ int system_monitor_init_with_config(const struct monitor_config *cfg)
     if (g_mon.interval_ms == 0) g_mon.interval_ms = MONITOR_DEFAULT_INTERVAL;
     g_mon.history_depth = cfg->history_depth;
     g_mon.enable_wdt_feed = cfg->enable_wdt_feed;
-    g_mon.thresholds = cfg->thresholds ? *cfg->thresholds : DEFAULT_THRESHOLDS;
+    memcpy(&g_mon.thresholds, &cfg->thresholds, sizeof(g_mon.thresholds));
 
     if (g_mon.history_depth > 0) {
         g_mon.history_buf = malloc(sizeof(struct monitor_history_entry) *
@@ -625,7 +627,7 @@ int system_monitor_get_history_entry(int index, struct monitor_history_entry *en
     if (index >= g_mon.history_count) return APP_ERR_INVALID_PARAM;
 
     xSemaphoreTake(g_mon.mutex, portMAX_DELAY);
-    int real_idx = (g_mon.head - 1 - index + g_mon.history_depth) % g_mon.history_depth;
+    int real_idx = (g_mon.history_head - 1 - index + g_mon.history_depth) % g_mon.history_depth;
     *entry = g_mon.history_buf[real_idx];
     xSemaphoreGive(g_mon.mutex);
     return APP_ERR_OK;

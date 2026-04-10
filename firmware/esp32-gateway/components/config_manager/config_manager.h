@@ -57,6 +57,28 @@ struct system_config {
     /* 系统配置 */
     bool auto_reboot_enabled;       /**< 是否启用自动重启 */
     uint32_t reboot_interval_seconds; /**< 自动重启间隔（秒），默认 86400（24小时）*/
+
+    /* OTA 升级配置 */
+    char ota_server_url[128];        /**< OTA 服务器基础 URL，默认 "http://firmware.example.com" */
+    char ota_firmware_path[64];      /**< 固件路径，默认 "/edgevib/firmware.bin" */
+    char ota_version_url[128];       /**< 版本检查 URL，默认 "http://firmware.example.com/version.json" */
+    uint32_t ota_timeout_ms;         /**< HTTP 请求超时（毫秒），默认 30000 */
+    uint32_t ota_buffer_size;        /**< 下载缓冲区大小（字节），默认 4096 */
+    int ota_max_retries;             /**< 最大重试次数，默认 3 */
+    bool ota_auto_check_enabled;     /**< 是否启用自动版本检查，默认 false */
+    uint32_t ota_check_interval_s;   /**< 版本检查间隔（秒），默认 3600 (1小时)*/
+    bool ota_verify_sha256;          /**< 是否验证固件 SHA256，默认 true */
+    bool ota_rollback_on_failure;    /**< 升级失败时是否自动回滚，默认 true */
+
+    /* 时间同步配置 */
+    char timezone[16];               /**< 时区字符串，默认 "CST-8" (UTC+8) */
+    char sntp_server1[64];           /**< SNTP 服务器1，默认 "pool.ntp.org" */
+    char sntp_server2[64];           /**< SNTP 服务器2，默认 "time.google.com" */
+    uint32_t sntp_sync_timeout_ms;   /**< SNTP 同步超时（毫秒），默认 10000 */
+    uint32_t sntp_retry_interval_ms;/**< SNTP 重试间隔（毫秒），默认 5000 */
+    int sntp_max_retries;            /**< SNTP 最大重试次数，默认 3 */
+    bool sntp_auto_sync_enabled;    /**< 是否启用自动周期性同步，默认 true */
+    uint32_t sntp_sync_interval_s;  /**< 自动同步间隔（秒），默认 3600 (1小时)*/
 };
 
 /* 配置变更回调函数类型 */

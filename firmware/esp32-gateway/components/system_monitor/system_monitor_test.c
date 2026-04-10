@@ -15,6 +15,8 @@
 #include "unity.h"
 #include "system_monitor.h"
 #include "global_error.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include <string.h>
 
 /* ==================== 测试辅助变量 ==================== */
@@ -292,7 +294,7 @@ void test_set_thresholds_valid_should_succeed(void)
     TEST_ASSERT_EQUAL(APP_ERR_OK, ret);
 
     struct monitor_thresholds out;
-    ret = system_system_monitor_get_thresholds(&out);
+    ret = system_monitor_get_thresholds(&out);
     TEST_ASSERT_EQUAL(APP_ERR_OK, ret);
     TEST_ASSERT_FLOAT_WITHIN(0.01f, 75.0f, out.cpu_warn_percent);
     TEST_ASSERT_FLOAT_WITHIN(0.01f, 95.0f, out.cpu_critical_percent);
@@ -659,5 +661,5 @@ void app_main(void)
 
     printf("\n========================================\n");
     printf("   Test Results: %d failures\n", failures);
-    printf("========================================\n", failures);
+    printf("========================================\n");
 }
