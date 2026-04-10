@@ -14,6 +14,7 @@ idf_component_register(
     SRCS "system_monitor.c"
     INCLUDE_DIRS "."
     REQUIRES common log_system freertos
-    PRIV_REQUIRES driver esp_task_wdt unity
-    TEST_SRCS "system_monitor_test.c"
+    PRIV_REQUIRES driver esp_system unity
 )
+
+target_sources(${COMPONENT_LIB} PRIVATE "system_monitor_test.c")
