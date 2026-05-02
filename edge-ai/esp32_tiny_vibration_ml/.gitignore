@@ -1,0 +1,36 @@
+# Python 缓存
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+.env
+.venv
+
+# 数据集 (不上传)
+/data/raw/*
+/data/processed/*
+
+# 模型文件 (企业一般不上传)
+/models/saved_model/
+/models/tflite/*.tflite
+
+# 训练日志
+/logs/
+/checkpoints/
+
+# Jupyter
+.ipynb_checkpoints
+*.ipynb
+
+# 系统垃圾
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp

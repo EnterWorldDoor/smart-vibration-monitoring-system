@@ -1,8 +1,8 @@
-# 添加 log_system 组件
+# 日志系统组件 (无 MQTT 循环依赖版本)
 idf_component_register(
   SRCS "log_system.c"
   INCLUDE_DIRS "."
-  REQUIRES common driver freertos mqtt mbedtls
+  REQUIRES common driver freertos mbedtls
   PRIV_REQUIRES unity
 )
 

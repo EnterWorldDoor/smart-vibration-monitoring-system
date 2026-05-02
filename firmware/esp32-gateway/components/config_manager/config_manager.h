@@ -32,18 +32,75 @@ struct system_config {
     uint32_t config_version;          /**< 配置结构体版本号 (CONFIG_VERSION)，用于迁移判断 */
     uint32_t crc32;                  /**< CRC32 校验和，存储时计算，读取时验证 */
     
-    /* 传感器配置 */
-    int sample_rate_hz;          /**< 采样率 (Hz)，默认 100 */
-    int sensor_buffer_size;      /**< 传感器环形缓冲区大小（样本数），默认 512 */
+    /* ===== ADXL345 加速度计配置 ===== */
+    int adxl345_spi_host_id;         /**< SPI 主机 ID (SPI2_HOST=1, SPI3_HOST=2), 默认 SPI2_HOST */
+    int adxl345_gpio_cs;             /**< CS 引脚号, 默认 5 */
+    int adxl345_gpio_miso;           /**< MISO 引脚号, 默认 19 */
+    int adxl345_gpio_mosi;           /**< MOSI 引脚号, 默认 23 */
+    int adxl345_gpio_sclk;           /**< SCLK 引脚号, 默认 18 */
+    int adxl345_clock_speed_hz;      /**< SPI 时钟频率 (Hz), 默认 5000000 (5MHz) */
+    int adxl345_range;               /**< 量程: 2/4/8/16G, 默认 16G */
+    int adxl345_data_rate;           /**< 数据速率 (Hz): 100/200/400/800...3200, 默认 400 */
+    int adxl345_fifo_mode;           /**< FIFO 模式: 0=Bypass, 1=FIFO, 2=Stream, 默认 Stream */
+    int adxl345_ma_window_size;      /**< 移动平均窗口大小, 默认 16 */
 
-    /* DSP 配置 */
-    int fft_size;                /**< FFT 点数，默认 512（2 的幂）*/
-    float rms_warning_threshold; /**< RMS 警告阈值 (g)，默认 2.0 */
-    float rms_critical_threshold;/**< RMS 严重阈值 (g)，默认 4.0 */
-    float freq_peak_threshold;   /**< 频谱峰值异常阈值，默认 0.5 */
+    /* ===== DSP 数字信号处理配置 ===== */
+    int fft_size;                    /**< FFT 点数 (必须为2的幂), 默认 512 */
+    int dsp_window_type;            /**< 窗函数类型: 0=Rect, 1=Hann, 2=Hamming, 3=Blackman, 默认 Hann(1) */
+    bool dsp_enable_dc_removal;     /**< 是否去除直流分量, 默认 true */
+    float rms_warning_threshold;     /**< RMS 警告阈值 (g), 默认 2.0 */
+    float rms_critical_threshold;   /**< RMS 严重阈值 (g), 默认 4.0 */
+    float freq_peak_threshold;      /**< 频谱峰值异常阈值, 默认 0.5 */
+
+    /* ===== Temperature Compensation 温度补偿配置 ===== */
+    bool temp_comp_enabled;         /**< 是否启用温度补偿, 默认 true */
+    float temp_comp_ewma_alpha;     /**< EWMA 滤波系数 (0~1), 默认 0.1 */
+    float temp_comp_change_threshold; /**< 温度变化触发补偿阈值 (°C), 默认 0.5 */
+    float temp_comp_rate_threshold;  /**< 温度变化率阈值 (°C/s), 默认 1.0 */
+    int temp_comp_stale_data_ms;     /**< 数据陈旧判定时间 (ms), 默认 5000 */
+
+    /* ===== Sensor Service 传感器服务配置 ===== */
+    int sample_rate_hz;              /**< 采样率 (Hz), 默认 400 */
+    int sensor_buffer_size;          /**< 环形缓冲区大小 (样本数), 默认 1024 */
+    uint32_t analysis_interval_ms;   /**< 分析周期 (ms), 默认 1000 */
+    bool sensor_enable_temp_from_protocol; /**< 是否从协议接收温度, 默认 true */
+    bool sensor_enable_detailed_log; /**< 是否启用详细日志, 默认 false */
+
+
+
+    /* ===== Protocol UART 通信协议配置 ===== */
+    int protocol_uart_num;           /**< UART 端口号, 默认 UART_NUM_4 */
+    int protocol_baud_rate;          /**< 波特率, 默认 115200 */
+    int protocol_tx_pin;             /**< TX 引脚号, 默认 17 */
+    int protocol_rx_pin;             /**< RX 引脚号, 默认 16 */
+    bool protocol_enable_ack;        /**< 是否启用 ACK 机制, 默认 true */
+    bool protocol_enable_heartbeat;  /**< 是否启用心跳, 默认 true */
+    uint32_t protocol_ack_timeout_ms; /**< ACK 超时 (ms), 默认 500 */
+    uint32_t protocol_heartbeat_interval_ms; /**< 心跳间隔 (ms), 默认 1000 */
+    int protocol_max_retries;        /**< 最大重试次数, 默认 3 */
+    bool protocol_debug_dump;         /**< 是否输出帧调试信息, 默认 false */
+
+    /* ===== MQTT 通信配置 ===== */
+    int mqtt_mode;                   /**< 运行模式: 0=Training(PC), 1=Upload(树莓派), 默认 Training(0) */
+    char mqtt_broker_url[128];       /**< Broker URL, 默认 "mqtt://192.168.1.100:1883" (PC) */
+    uint16_t mqtt_broker_port;        /**< Broker 端口, 默认 1883 */
+    char mqtt_username[64];          /**< 用户名 (可选), 默认空 */
+    char mqtt_password[64];          /**< 密码 (可选), 默认空 */
+    char mqtt_client_id[64];         /**< 客户端 ID, 自动生成 */
+    uint8_t mqtt_qos;                /**< QoS 等级 (0/1/2), 默认 1 */
+    bool mqtt_enable_tls;            /**< 是否启用 TLS, 默认 false */
+    bool mqtt_clean_session;         /**< 清除会话, 默认 true */
+    uint32_t mqtt_keepalive_sec;     /**< Keep-Alive 时间 (秒), 默认 120 */
+    uint32_t mqtt_publish_interval_ms; /**< 发布间隔 (ms), 默认 1000 */
+    uint8_t mqtt_num_virtual_devices; /**< 虚拟设备数量 (1=不模拟, 2~8=模拟N台), 默认 1 */
+    bool mqtt_enable_lwt;            /**< 启用 LWT, 默认 true */
+    char mqtt_lwt_topic[64];         /**< LWT Topic, 默认 "edgevib/status" */
+    bool mqtt_publish_vibration;     /**< 发布振动数据, 默认 true */
+    bool mqtt_publish_environment;   /**< 发布环境数据, 默认 true */
+    bool mqtt_publish_health;        /**< 发布健康状态, 默认 false */
 
     /* AI 配置 */
-    float ai_anomaly_threshold;  /**< AI 异常分数阈值，默认 0.7 */
+    float ai_anomaly_threshold;      /**< AI 异常分数阈值，默认 0.7 */
 
     /* 通信配置 */
     uint32_t heartbeat_interval_ms; /**< 心跳间隔 (ms)，默认 1000 */
@@ -208,6 +265,57 @@ uint8_t config_manager_get_device_id(void);
  * Return: APP_ERR_OK on success, APP_ERR_INVALID_PARAM if output is NULL
  */
 int config_manager_get_rms_thresholds(float *warning_out, float *critical_out);
+
+/* ==================== ADXL345 配置 Getter/Setter ==================== */
+
+/**
+ * config_manager_get_adxl345_spi_config - 获取 ADXL345 SPI 完整配置
+ * @host_id_out: 输出 SPI 主机 ID
+ * @cs_out: 输出 CS 引脚
+ * @miso_out: 输出 MISO 引脚
+ * @mosi_out: 输出 MOSI 引脚
+ * @sclk_out: 输出 SCLK 引脚
+ * @clock_hz_out: 输出时钟频率
+ */
+void config_manager_get_adxl345_spi_config(int *host_id_out, int *cs_out,
+                                            int *miso_out, int *mosi_out,
+                                            int *sclk_out, int *clock_hz_out);
+
+int config_manager_get_adxl345_range(void);
+int config_manager_set_adxl345_range(int range);
+int config_manager_get_adxl345_data_rate(void);
+int config_manager_set_adxl345_data_rate(int rate);
+
+/* ==================== DSP 配置 Getter/Setter ==================== */
+
+int config_manager_get_dsp_window_type(void);
+int config_manager_set_dsp_window_type(int window_type);
+bool config_manager_get_dsp_dc_removal(void);
+void config_manager_set_dsp_dc_removal(bool enable);
+
+/* ==================== Temperature Compensation 配置 Getter/Setter ==================== */
+
+bool config_manager_get_temp_comp_enabled(void);
+void config_manager_set_temp_comp_enabled(bool enabled);
+float config_manager_get_temp_comp_ewma_alpha(void);
+int config_manager_set_temp_comp_ewma_alpha(float alpha);
+float config_manager_get_temp_comp_change_threshold(void);
+int config_manager_set_temp_comp_change_threshold(float threshold);
+
+/* ==================== Sensor Service 配置 Getter/Setter ==================== */
+
+uint32_t config_manager_get_analysis_interval(void);
+int config_manager_set_analysis_interval(uint32_t interval_ms);
+bool config_manager_get_sensor_protocol_temp(void);
+void config_manager_set_sensor_protocol_temp(bool enable);
+
+
+/* ==================== Protocol 配置 Getter/Setter ==================== */
+
+int config_manager_get_protocol_uart_config(int *uart_num, int *baud_rate,
+                                             int *tx_pin, int *rx_pin);
+bool config_manager_get_protocol_ack_enabled(void);
+uint32_t config_manager_get_protocol_heartbeat_interval(void);
 
 /* ==================== 导出 / 导入（序列化） ==================== */
 

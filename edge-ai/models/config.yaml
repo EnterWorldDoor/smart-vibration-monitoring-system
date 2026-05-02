@@ -1,0 +1,60 @@
+# EdgeVib Model Training Configuration
+# 运行环境: Anaconda edgevib-tf (Python 3.11 + TF 2.15.1)
+# 部署目标: ESP32-S3-DevKitC-1 (TFLite INT8 + C 规则引擎)
+
+# ==================== 数据配置 ====================
+data:
+  train_csv: "datasets/features_train.csv"
+  window_size: 256
+  step_size: 128
+  test_ratio: 0.15
+  val_ratio: 0.15
+  random_seed: 42
+
+# ==================== 主模型配置 ====================
+primary_model:
+  architecture: "cnn_lstm_hybrid"
+  input_shape: [256, 24]
+  num_classes: 4
+  class_names:
+    - "normal"
+    - "imbalance"
+    - "misalignment"
+    - "bearing_fault"
+  cnn_filters: [32, 64, 128]
+  lstm_units: 64
+  dropout_rate: 0.3
+  learning_rate: 0.001
+
+# ==================== 训练配置 ====================
+training:
+  epochs: 100
+  batch_size: 32
+  early_stopping_patience: 15
+  reduce_lr_patience: 8
+  reduce_lr_factor: 0.5
+  min_learning_rate: 0.000001
+
+# ==================== 兜底模型配置 ====================
+fallback_model:
+  iso_class: "class_II"
+  alarm_threshold_mm_s: 7.1
+  trip_threshold_mm_s: 11.0
+  peak_freq_high_warn: 500.0
+  crest_factor_warn: 6.0
+  kurtosis_warn: 4.0
+  temp_high_warn: 85.0
+
+# ==================== 级联配置 ====================
+cascade:
+  confidence_threshold: 0.85
+  fallback_on_error: true
+
+# ==================== Autoencoder配置 ====================
+autoencoder:
+  input_dim: 24
+  latent_dim: 8
+  encoder_layers: [128, 64, 32, 16]
+  anomaly_percentile: 95.0
+  epochs: 150
+  batch_size: 32

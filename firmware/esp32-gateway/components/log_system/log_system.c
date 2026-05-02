@@ -36,9 +36,13 @@
 /* 引入POSIX标准库，提供文件操作和系统调用 */
  #include <unistd.h>
 /* 引入文件控制头文件，提供文件描述符控制功能 */
- #include <fcntl.h>
-/* 引入MQTT相关头文件 */
- #include "mqtt_client.h"
+#include <fcntl.h>
+
+#ifdef CONFIG_LOG_MQTT_OUTPUT
+/* 引入MQTT相关头文件 (仅在启用MQTT输出时) */
+#include <mqtt_client.h>
+#endif
+
 /* 引入加密相关头文件 */
  #include "mbedtls/aes.h"
 /* 引入Base64编码相关头文件 */
@@ -87,10 +91,12 @@ static void *g_custom_sink_ctx = NULL;
 /* 定义批量缓冲区最大大小 */
  static size_t g_batch_buffer_max = 0;
 
+#ifdef CONFIG_LOG_MQTT_OUTPUT
 /* 定义MQTT客户端句柄 */
  static esp_mqtt_client_handle_t g_mqtt_client = NULL;
 /* 定义MQTT连接状态 */
  static bool g_mqtt_connected = false;
+#endif
 
 /* 日志消息结构体 */
  typedef struct {
@@ -106,14 +112,18 @@ static void process_log_message(const log_message_t *message);
 static uint32_t check_filter_rules(log_level_t level, const char *tag);
 static void add_to_batch_buffer(const char *buffer);
 static void flush_batch_buffer(void);
+#ifdef CONFIG_LOG_MQTT_OUTPUT
 static void output_mqtt(const char *buffer);
+#endif
 static void output_file(const char *buffer);
 static void output_uart(const char *buffer);
 static void output_ringbuf(const char *buffer);
 static int compress_file(const char *input_path, const char *output_path);
 static void clean_old_log_files(const char *dir_path, const char *base_name, int max_count);
+#ifdef CONFIG_LOG_MQTT_OUTPUT
 static int init_mqtt_client(void);
 static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_t event_id, void *event_data);
+#endif
 
 /* 定义获取时间戳字符串的静态函数，将当前时间格式化为指定格式 */
  static void get_timestamp_str(char *buf, size_t len)
@@ -129,13 +139,28 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
  }
 
 /* 定义输出到UART串口的静态函数，使用默认的UART0端口 */
- static void output_uart(const char *str)
- {
-    /* 调用uart_write_bytes函数将日志字符串写入UART0串口 */
+static void output_uart(const char *str)
+{
+    /*
+     * 安全检查: 确保字符串有效且不为空
+     * 避免向UART写入NULL或空指针导致崩溃
+     */
+    if (!str || strlen(str) == 0) {
+        return;
+    }
+    
+    /*
+     * 直接调用uart_write_bytes写入UART0
+     * 
+     * 注意: UART0驱动已在log_system_init()中通过
+     *       uart_driver_install(UART_NUM_0, ...) 安装
+     * 
+     * 如果驱动未安装,此函数会返回ESP_ERR_INVALID_STATE错误,
+     * 但不会导致系统崩溃 (仅丢失该条日志)
+     */
     uart_write_bytes(UART_NUM_0, str, strlen(str));
-    /* 调用uart_write_bytes函数写入回车换行符，保持日志输出的可读性 */
     uart_write_bytes(UART_NUM_0, "\r\n", 2);
- }
+}
 
 /* 定义输出到环形缓冲区的静态函数，将日志数据存储到缓冲区供后续读取 */
  static void output_ringbuf(const char *str)
@@ -270,11 +295,13 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
             output_file(buf);
         }
     }
-    
+
+#ifdef CONFIG_LOG_MQTT_OUTPUT
     if (allowed_outputs & LOG_OUTPUT_MQTT) {
         output_mqtt(buf);
     }
- }
+#endif
+}
 
 /* 定义添加到批量缓冲区的函数 */
  static void add_to_batch_buffer(const char *str)
@@ -362,6 +389,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
     return APP_ERR_OK;
  }
 
+#ifdef CONFIG_LOG_MQTT_OUTPUT
 /* 定义MQTT事件处理函数 */
  static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_t event_id, void *event_data)
  {
@@ -449,25 +477,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
     }
  }
 
-/* 定义输出到MQTT的函数 */
- static void output_mqtt(const char *str)
- {
-    if (!g_mqtt_client || !g_mqtt_connected) {
-        return;
-    }
-    
-    /* 发布MQTT消息 */
-    int msg_id = esp_mqtt_client_publish(g_mqtt_client, 
-                                         g_config.mqtt_topic, 
-                                         str, 
-                                         0, 
-                                         g_config.mqtt_qos, 
-                                         0);
-    
-    if (msg_id == -1) {
-        handle_log_error(APP_ERR_LOG_MQTT_PUBLISH, "Failed to publish MQTT message");
-    }
- }
+#endif /* CONFIG_LOG_MQTT_OUTPUT */
 
 /* 定义检查日志过滤规则的函数 */
  static uint32_t check_filter_rules(log_level_t level, const char *tag)
@@ -755,10 +765,12 @@ void log_printf(log_level_t level, const char *tag, const char *fmt, ...)
             output_file(buf);
         }
     }
+#ifdef CONFIG_LOG_MQTT_OUTPUT
     /* 检查是否启用MQTT输出，通过位与运算判断 */
     if (allowed_outputs & LOG_OUTPUT_MQTT) {
         output_mqtt(buf);
     }
+#endif
 
     /* 释放互斥锁，允许其他任务访问日志系统资源 */
     if (g_log_mutex) xSemaphoreGive(g_log_mutex);
@@ -847,6 +859,40 @@ int log_system_init(log_level_t level, uint32_t outputs, size_t ringbuf_size)
         return APP_ERR_LOG_MUTEX_CREATE;
     }
 
+    /*
+     * ========== 初始化 UART0 驱动 (用于日志输出) ==========
+     *
+     * ⚠️ 【关键】必须在使用 uart_write_bytes() 之前安装驱动!
+     *   原因: ESP-IDF 的 UART 驱动需要显式安装
+     *   否则调用 uart_write_bytes() 会返回 ESP_ERR_INVALID_STATE (1629)
+     *
+     * 配置参数:
+     *   - UART_NUM_0: 使用UART0 (ESP32的默认日志串口)
+     *   - RX缓冲区: 256 bytes (仅用于日志输出,不需要接收)
+     *   - TX缓冲区: 2048 bytes (足够大的输出缓冲)
+     *   - 事件队列大小: 0 (不需要事件回调)
+     *   - 事件标志: 0
+     *   - 分配标志: 0
+     */
+    if (outputs & LOG_OUTPUT_UART) {
+        esp_err_t ret = uart_driver_install(
+            UART_NUM_0,      // UART端口号 (0=默认日志端口)
+            256,             // RX缓冲区大小 (bytes)
+            2048,            // TX缓冲区大小 (bytes)
+            0,               // 事件队列大小
+            0,               // 事件队列标志
+            0                // 中断分配标志
+        );
+        
+        if (ret != ESP_OK) {
+            /* UART驱动安装失败不是致命的,回退到printf */
+            printf("[LOG_WARN] Failed to install UART0 driver (err=0x%x), using printf fallback\n", ret);
+            /* 禁用UART输出,避免后续错误 */
+            outputs &= ~LOG_OUTPUT_UART;
+            g_outputs &= ~LOG_OUTPUT_UART;
+        }
+    }
+
     /* 标记日志系统已初始化 */
     g_initialized = true;
 
@@ -860,6 +906,7 @@ int log_system_init(log_level_t level, uint32_t outputs, size_t ringbuf_size)
         }
     }
     
+#ifdef CONFIG_LOG_MQTT_OUTPUT
     /* 如果启用了MQTT，初始化MQTT客户端 */
     if (g_config.mqtt_enabled) {
         int ret = init_mqtt_client();
@@ -869,6 +916,7 @@ int log_system_init(log_level_t level, uint32_t outputs, size_t ringbuf_size)
             handle_log_error(ret, "Failed to initialize MQTT client, disabling MQTT");
         }
     }
+#endif
 
     /* 使用LOG_INFO宏输出日志系统初始化成功的消息 */
     LOG_INFO("LOG", "Log system initialized (level=%d, outputs=0x%x, async=%d, batch=%d, mqtt=%d, filter=%d)", 
@@ -1256,10 +1304,12 @@ int log_shutdown(void)
         g_log_file = NULL;
     }
     
+#ifdef CONFIG_LOG_MQTT_OUTPUT
     /* 清理MQTT客户端 */
     if (g_config.mqtt_enabled) {
         cleanup_mqtt_client();
     }
+#endif
     
     /* 清理异步系统 */
     if (g_config.async_mode) {
@@ -1378,6 +1428,7 @@ int log_clear_filter_rules(void)
 }
 
 /* 定义手动连接MQTT服务器的函数 */
+#ifdef CONFIG_LOG_MQTT_OUTPUT
 int log_mqtt_connect(void)
 {
     /* 检查日志系统是否已初始化 */
@@ -1415,6 +1466,19 @@ int log_mqtt_disconnect(void)
     cleanup_mqtt_client();
     return APP_ERR_OK;
 }
+#else
+int log_mqtt_connect(void)
+{
+    (void)0;
+    return APP_ERR_LOG_CONFIG_INVALID;
+}
+
+int log_mqtt_disconnect(void)
+{
+    (void)0;
+    return APP_ERR_OK;
+}
+#endif
 
 /* 定义压缩日志文件的函数 */
 int log_compress_logs(const char *input_path, const char *output_path)

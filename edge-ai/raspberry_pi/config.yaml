@@ -1,0 +1,20 @@
+# Raspberry Pi Edge Server Configuration
+
+mqtt:
+  broker_host: "192.168.43.1"
+  broker_port: 1883
+  input_topic: "edgevib/train/#"
+  output_topic_prefix: "edgevib/inference/rpi"
+
+inference:
+  model_dir: "models/saved_models"
+  confidence_threshold: 0.85
+
+http_api:
+  enabled: false
+  port: 5000
+
+system:
+  log_level: "INFO"
+  performance_mode: true
+  cpu_governor: "performance"

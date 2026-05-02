@@ -1,0 +1,6 @@
+# ESP-IDF Component Registry dependencies
+# 注意: esp-dsp 已移除 - dsp.c 现在使用纯 C fallback 实现
+# 如果需要启用 ESP-DSP 加速，请取消注释以下配置:
+# dependencies:
+#   espressif/esp-dsp:
+#     version: "^2.0.0"
