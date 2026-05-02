@@ -22,6 +22,7 @@
 #include "freertos/task.h"
 #include "freertos/semphr.h"
 #include "freertos/event_groups.h"
+#include "esp_timer.h"
 #include <string.h>
 #include <stdlib.h>
 
@@ -70,6 +71,25 @@ static struct {
 
     /* 错误回调 */
     proto_error_callback_t error_cb;
+
+    /* 温湿度数据回调 (新增) */
+    struct {
+        temp_data_callback_t cb;
+        void *user_data;
+    } temp_callbacks[8];
+    int temp_callback_count;
+
+    /* 最新温湿度数据缓存 (新增) */
+    struct temp_humidity_data latest_temp;
+    bool has_latest_temp;
+
+    /* 时间同步信息 (新增) */
+    struct time_sync_info time_sync;
+    struct {
+        proto_time_sync_callback_t cb;
+        void *user_data;
+    } time_sync_callbacks[4];
+    int time_sync_callback_count;
 
     /* 统计计数器 */
     struct proto_stats stats;
@@ -215,6 +235,90 @@ static void dispatch_callback(uint8_t cmd, const uint8_t *data,
     }
 }
 
+/**
+ * parse_temp_humidity_data - 解析温湿度传感器数据帧
+ * @data: 原始数据载荷
+ * @len: 数据长度
+ * @out: 输出解析后的结构体
+ *
+ * 数据格式 (STM32 端协议):
+ *   [0-3]   temperature_c     (float, 4 bytes)
+ *   [4-7]   humidity_rh       (float, 4 bytes)
+ *   [8-11]  timestamp_stm32_ms (uint32_t, 4 bytes)
+ *   [12]    sensor_type       (uint8_t, 1 byte)
+ *   [13]    sensor_status     (uint8_t, 1 byte)
+ *   [14-15] raw_adc_value      (int16_t, 2 bytes)
+ *   总计: 16 bytes
+ *
+ * Return: APP_ERR_OK or error code
+ */
+static int parse_temp_humidity_data(const uint8_t *data, uint16_t len,
+                                     struct temp_humidity_data *out)
+{
+    if (!data || !out || len < 16) return APP_ERR_PROTO_INVALID_DATA;
+
+    memcpy(&out->temperature_c, &data[0], sizeof(float));
+    memcpy(&out->humidity_rh, &data[4], sizeof(float));
+    memcpy(&out->timestamp_stm32_ms, &data[8], sizeof(uint32_t));
+    out->sensor_type = (enum temp_sensor_type)data[12];
+    out->sensor_status = data[13];
+    memcpy(&out->raw_adc_value, &data[14], sizeof(int16_t));
+
+    out->timestamp_esp32_us = (uint32_t)esp_timer_get_time();
+
+    return APP_ERR_OK;
+}
+
+/**
+ * dispatch_temp_callback - 分发温湿度数据到所有注册的温度回调
+ */
+static void dispatch_temp_callback(const struct temp_humidity_data *temp_data)
+{
+    xSemaphoreTake(g_proto.mutex, portMAX_DELAY);
+    memcpy(&g_proto.latest_temp, temp_data, sizeof(*temp_data));
+    g_proto.has_latest_temp = true;
+    xSemaphoreGive(g_proto.mutex);
+
+    for (int i = 0; i < g_proto.temp_callback_count; i++) {
+        if (g_proto.temp_callbacks[i].cb) {
+            g_proto.temp_callbacks[i].cb(temp_data,
+                                        g_proto.temp_callbacks[i].user_data);
+        }
+    }
+}
+
+/**
+ * handle_time_sync_response - 处理时间同步响应
+ */
+static void handle_time_sync_response(const uint8_t *data, uint16_t len)
+{
+    if (len < 4) return;
+
+    uint32_t stm32_timestamp_ms;
+    memcpy(&stm32_timestamp_ms, data, sizeof(uint32_t));
+
+    int64_t esp32_now_us = esp_timer_get_time();
+    int64_t stm32_now_us = (int64_t)stm32_timestamp_ms * 1000LL;
+
+    xSemaphoreTake(g_proto.mutex, portMAX_DELAY);
+    g_proto.time_sync.stm32_epoch_offset_us = esp32_now_us - stm32_now_us;
+    g_proto.time_sync.last_sync_time_us = (uint32_t)esp32_now_us;
+    g_proto.time_sync.is_synchronized = true;
+    g_proto.time_sync.consecutive_failures = 0;
+    xSemaphoreGive(g_proto.mutex);
+
+    LOG_INFO("PROTO", "Time sync complete: offset=%lld us",
+             (long long)g_proto.time_sync.stm32_epoch_offset_us);
+
+    for (int i = 0; i < g_proto.time_sync_callback_count; i++) {
+        if (g_proto.time_sync_callbacks[i].cb) {
+            g_proto.time_sync_callbacks[i].cb(
+                &g_proto.time_sync,
+                g_proto.time_sync_callbacks[i].user_data);
+        }
+    }
+}
+
 /* ==================== 接收任务（状态机解析）==================== */
 
 static void rx_task_func(void *arg)
@@ -230,6 +334,15 @@ static void rx_task_func(void *arg)
 
     LOG_INFO("PROTO", "RX task started (state machine parser)");
 
+    /*
+     * ⚠️ 【调试模式】UART接收统计
+     * 用于诊断为什么ESP32收不到STM32的数据
+     * 如果 total_bytes > 0 但 frames = 0: 物理层正常, 协议解析有问题
+     * 如果 total_bytes = 0: 物理层完全没有数据 (接线/驱动问题)
+     */
+    static uint32_t total_bytes = 0;
+    static uint32_t debug_counter = 0;
+
     while (1) {
         EventBits_t bits = xEventGroupWaitBits(
             g_proto.ack_event, STOP_RX_BIT,
@@ -238,7 +351,41 @@ static void rx_task_func(void *arg)
 
         int read_len = uart_read_bytes(g_proto.uart_num, buffer,
                                        sizeof(buffer), pdMS_TO_TICKS(10));
-        if (read_len <= 0) continue;
+
+        if (read_len > 0) {
+            /* 收到数据! 累计统计 */
+            total_bytes += read_len;
+
+            /* 每100字节打印一次 (避免日志洪水) */
+            if (total_bytes - debug_counter >= 100) {
+                LOG_INFO("PROTO-RX", "📥 Received %u bytes total (last=%d)", total_bytes, read_len);
+                debug_counter = total_bytes;
+            }
+        } else if (read_len == 0) {
+            /*
+             * ⚠️ 【优化】无UART数据是常见情况,降级为DEBUG!
+             *
+             * 原始问题:
+             *   每10秒打印 WARN: "No UART data received"
+             *   STM32未上电/未编程/UART断开时是正常的
+             *   不应频繁输出WARN级别日志
+             *
+             * 解决方案:
+             *   降级为 LOG_DEBUG (仅详细日志模式显示)
+             *   保持10秒频率控制
+             */
+            static uint32_t last_no_data_log = 0;
+            uint32_t now = (uint32_t)(esp_timer_get_time() / 10000LL);  // 10ms单位
+            if (now - last_no_data_log >= 1000) {  // 10秒一次
+                LOG_DEBUG("PROTO-RX", "No UART data received (total=%u, waiting for STM32...)", total_bytes);
+                last_no_data_log = now;
+            }
+            continue;
+        } else {
+            /* read_len < 0: UART错误 */
+            LOG_ERROR("PROTO-RX", "UART read error (ret=%d)", read_len);
+            continue;
+        }
 
         for (int i = 0; i < read_len; i++) {
             uint8_t byte_val = buffer[i];
@@ -313,33 +460,63 @@ static void rx_task_func(void *arg)
 
             case STATE_WAIT_TAIL:
                 if (byte_val == PROTO_TAIL) {
-                    uint8_t calc_crc_buf[4] = {
-                        (expected_len >> 8) & 0xFF,
-                        expected_len & 0xFF,
-                        dev_id, cmd
-                    };
-                    uint16_t calc_crc = crc16_modbus(calc_crc_buf, 4);
-                    calc_crc = crc16_modbus((uint8_t *)&calc_crc, 2);
-                    if (expected_len > 0) {
-                        uint16_t data_crc = crc16_modbus(frame, expected_len);
-                        calc_crc = crc16_modbus((uint8_t*)&calc_crc, 2);
-                        calc_crc = crc16_modbus((uint8_t*)&data_crc, 2);
+                    /*
+                     * ⚠️ 【关键修复】统一CRC校验逻辑 (与STM32发送端完全一致!)
+                     *
+                     * STM32发送端 (protocol.c:149):
+                     *   crc16_calculate(&out_buf[2], idx - 2)
+                     *   计算范围: 从LEN字段开始到DATA结束
+                     *   包含: LEN(2B) + DEV_ID(1B) + CMD(1B) + SEQ(1B) + DATA(nB)
+                     *   不包含: SOF(2B) + CRC(2B) + TAIL(1B)
+                     *
+                     * ESP32接收端应做同样的计算:
+                     *   构建 crc_buf = {len_h, len_l, dev_id, cmd, seq, data...}
+                     *   calc_crc = crc16_modbus(crc_buf, 4 + expected_len)
+                     *   比较 calc_crc 与 recv_crc
+                     */
+
+                    /* 构建待校验的数据缓冲区 (与STM32发送时相同) */
+                    uint8_t crc_check_buf[PROTO_MAX_DATA_LEN + 5];
+                    int crc_buf_len = 0;
+
+                    /* 添加 LEN 字段 */
+                    crc_check_buf[crc_buf_len++] = (expected_len >> 8) & 0xFF;
+                    crc_check_buf[crc_buf_len++] = expected_len & 0xFF;
+
+                    /* 添加 DEV_ID */
+                    crc_check_buf[crc_buf_len++] = dev_id;
+
+                    /* 添加 CMD */
+                    crc_check_buf[crc_buf_len++] = cmd;
+
+                    /* 添加 SEQ */
+                    crc_check_buf[crc_buf_len++] = seq;
+
+                    /* 添加 DATA (纯数据部分) */
+                    /*
+                     * ✅ 【关键修复】expected_len 的正确含义:
+                     *
+                     * STM32发送端 build_frame():
+                     *   - 参数 len = 纯DATA载荷长度 (如温湿度数据16字节)
+                     *   - 帧中 LEN字段 = len (如 0x0010)
+                     *   - CRC计算范围: LEN(2B) + DEV_ID(1B) + CMD(1B) + SEQ(1B) + DATA(len B)
+                     *
+                     * ESP32接收端状态机:
+                     *   - 接收到的 expected_len = 帧中LEN字段值 = 纯DATA长度
+                     *   - frame[] 数组中存储了 expected_len 字节的纯DATA
+                     *   - 所以这里直接使用 expected_len 作为DATA长度即可!
+                     */
+                    if (expected_len > 0 && expected_len <= PROTO_MAX_DATA_LEN) {
+                        memcpy(&crc_check_buf[crc_buf_len], frame, expected_len);
+                        crc_buf_len += expected_len;
                     }
 
-                    uint16_t final_crc = crc16_modbus(
-                        (const uint8_t[]){
-                            (expected_len >> 8) & 0xFF, expected_len & 0xFF,
-                            dev_id, cmd, seq
-                        }, 5);
-                    if (expected_len > 0) {
-                        uint16_t dc = crc16_modbus(frame, expected_len);
-                        final_crc = crc16_modbus((uint8_t[]){
-                            (final_crc >> 8) & 0xFF, final_crc & 0xFF,
-                            (dc >> 8) & 0xFF, dc & 0xFF
-                        }, 4);
-                    }
+                    /* 计算CRC (使用与STM32相同的Modbus算法) */
+                    uint16_t calc_crc = crc16_modbus(crc_check_buf, crc_buf_len);
 
-                    if (final_crc == recv_crc) {
+                    /* 比较计算的CRC与接收到的CRC */
+                    if (calc_crc == recv_crc) {
+                        /* ✅ CRC校验通过! */
                         uint16_t total_len = 7 + expected_len + 2;
                         update_stats_rx(total_len);
 
@@ -375,6 +552,24 @@ static void rx_task_func(void *arg)
                                 g_proto.stats.ack_received++;
                                 xSemaphoreGive(g_proto.mutex);
                             }
+                        } else if (cmd == CMD_TEMP_HUMIDITY_DATA) {
+                            struct temp_humidity_data temp_data;
+                            int ret = parse_temp_humidity_data(
+                                frame, expected_len, &temp_data);
+                            if (ret == APP_ERR_OK) {
+                                dispatch_temp_callback(&temp_data);
+                                LOG_DEBUG("PROTO", "Temp data: T=%.2f°C H=%.1f%%RH",
+                                          temp_data.temperature_c,
+                                          temp_data.humidity_rh);
+                            } else {
+                                LOG_WARN("PROTO", "Failed to parse temp data");
+                            }
+                            dispatch_callback(cmd, frame, expected_len,
+                                              dev_id, seq);
+                        } else if (cmd == CMD_TIME_SYNC_RESP) {
+                            handle_time_sync_response(frame, expected_len);
+                            dispatch_callback(cmd, frame, expected_len,
+                                              dev_id, seq);
                         } else {
                             dispatch_callback(cmd, frame, expected_len,
                                               dev_id, seq);
@@ -573,7 +768,7 @@ int protocol_start(void)
 
     if (g_proto.cfg.enable_heartbeat) {
         ret = xTaskCreate(heartbeat_task_func, "proto_hb",
-                          2048, NULL,
+                          PROTO_TASK_STACK_SIZE, NULL,  /* 使用4KB栈大小,防止心跳函数调用链过深 */
                           PROTO_TASK_PRIORITY + 1, &g_proto.heartbeat_task);
         if (ret != pdPASS) {
             LOG_WARN("PROTO", "Failed to create heartbeat task");
@@ -814,6 +1009,164 @@ void protocol_dump_stats(void)
         LOG_INFO("PROTO", "ACK received: %u", s.ack_received);
         LOG_INFO("PROTO", "Peer alive: %s",
                  protocol_is_peer_alive() ? "YES" : "NO");
+        LOG_INFO("PROTO", "Temp callbacks: %d", g_proto.temp_callback_count);
+        LOG_INFO("PROTO", "Time sync: %s",
+                 g_proto.time_sync.is_synchronized ? "YES" : "NO");
         LOG_INFO("PROTO", "---------------------------");
     }
+}
+
+/* ==================== 温湿度传感器 API 实现 ==================== */
+
+int protocol_register_temp_callback(temp_data_callback_t cb, void *user_data)
+{
+    if (!g_proto.initialized) return APP_ERR_PROTO_NOT_INIT;
+    if (!cb || g_proto.temp_callback_count >= 8) return APP_ERR_INVALID_PARAM;
+
+    xSemaphoreTake(g_proto.mutex, portMAX_DELAY);
+    g_proto.temp_callbacks[g_proto.temp_callback_count].cb = cb;
+    g_proto.temp_callbacks[g_proto.temp_callback_count].user_data = user_data;
+    g_proto.temp_callback_count++;
+    xSemaphoreGive(g_proto.mutex);
+
+    LOG_INFO("PROTO", "Temp callback registered (total=%d)",
+             g_proto.temp_callback_count);
+    return APP_ERR_OK;
+}
+
+int protocol_unregister_temp_callback(temp_data_callback_t cb)
+{
+    if (!cb) return APP_ERR_INVALID_PARAM;
+    if (!g_proto.initialized) return APP_ERR_PROTO_NOT_INIT;
+
+    xSemaphoreTake(g_proto.mutex, portMAX_DELAY);
+    for (int i = 0; i < g_proto.temp_callback_count; i++) {
+        if (g_proto.temp_callbacks[i].cb == cb) {
+            for (int j = i; j < g_proto.temp_callback_count - 1; j++) {
+                g_proto.temp_callbacks[j] = g_proto.temp_callbacks[j + 1];
+            }
+            g_proto.temp_callback_count--;
+            xSemaphoreGive(g_proto.mutex);
+            return APP_ERR_OK;
+        }
+    }
+    xSemaphoreGive(g_proto.mutex);
+    return APP_ERR_NOT_SUPPORTED;
+}
+
+int protocol_request_temp_data(void)
+{
+    if (!g_proto.initialized) return APP_ERR_PROTO_NOT_INIT;
+
+    uint8_t cmd = CMD_CONFIG_GET;
+    return protocol_send_with_ack(cmd, &cmd, 1, 1000);
+}
+
+int protocol_get_latest_temp(struct temp_humidity_data *out)
+{
+    if (!out) return APP_ERR_INVALID_PARAM;
+    if (!g_proto.initialized) return APP_ERR_PROTO_NOT_INIT;
+
+    xSemaphoreTake(g_proto.mutex, portMAX_DELAY);
+    if (!g_proto.has_latest_temp) {
+        xSemaphoreGive(g_proto.mutex);
+        return APP_ERR_PROTO_NO_DATA;
+    }
+    memcpy(out, &g_proto.latest_temp, sizeof(*out));
+    xSemaphoreGive(g_proto.mutex);
+
+    return APP_ERR_OK;
+}
+
+/* ==================== 时间同步 API 实现 ==================== */
+
+int protocol_register_time_sync_callback(proto_time_sync_callback_t cb,
+                                          void *user_data)
+{
+    if (!g_proto.initialized) return APP_ERR_PROTO_NOT_INIT;
+    if (!cb || g_proto.time_sync_callback_count >= 4) return APP_ERR_INVALID_PARAM;
+
+    xSemaphoreTake(g_proto.mutex, portMAX_DELAY);
+    g_proto.time_sync_callbacks[g_proto.time_sync_callback_count].cb = cb;
+    g_proto.time_sync_callbacks[g_proto.time_sync_callback_count].user_data = user_data;
+    g_proto.time_sync_callback_count++;
+    xSemaphoreGive(g_proto.mutex);
+
+    return APP_ERR_OK;
+}
+
+int protocol_initiate_time_sync(void)
+{
+    if (!g_proto.initialized) return APP_ERR_PROTO_NOT_INIT;
+
+    int64_t esp32_now_us = esp_timer_get_time();
+    uint32_t esp32_now_ms = (uint32_t)(esp32_now_us / 1000LL);
+
+    uint8_t data[4];
+    memcpy(data, &esp32_now_ms, sizeof(uint32_t));
+
+    int ret = protocol_send(CMD_TIME_SYNC_REQ, data, sizeof(data));
+    if (ret != APP_ERR_OK) {
+        xSemaphoreTake(g_proto.mutex, portMAX_DELAY);
+        g_proto.time_sync.consecutive_failures++;
+        xSemaphoreGive(g_proto.mutex);
+        LOG_WARN("PROTO", "Time sync request failed");
+    }
+
+    return ret;
+}
+
+int protocol_get_time_sync_info(struct time_sync_info *info)
+{
+    if (!info) return APP_ERR_INVALID_PARAM;
+    if (!g_proto.initialized) return APP_ERR_PROTO_NOT_INIT;
+
+    xSemaphoreTake(g_proto.mutex, portMAX_DELAY);
+    memcpy(info, &g_proto.time_sync, sizeof(*info));
+    xSemaphoreGive(g_proto.mutex);
+
+    return APP_ERR_OK;
+}
+
+int protocol_convert_stm32_to_esp32_time(uint32_t stm32_timestamp_ms,
+                                          int64_t *esp32_timestamp_us)
+{
+    if (!esp32_timestamp_us) return APP_ERR_INVALID_PARAM;
+    if (!g_proto.initialized) return APP_ERR_PROTO_NOT_INIT;
+
+    xSemaphoreTake(g_proto.mutex, portMAX_DELAY);
+    if (!g_proto.time_sync.is_synchronized) {
+        xSemaphoreGive(g_proto.mutex);
+        return APP_ERR_PROTO_TIME_SYNC_PENDING;
+    }
+
+    int64_t stm32_us = (int64_t)stm32_timestamp_ms * 1000LL;
+    *esp32_timestamp_us = stm32_us + g_proto.time_sync.stm32_epoch_offset_us;
+    xSemaphoreGive(g_proto.mutex);
+
+    return APP_ERR_OK;
+}
+
+/* ==================== 获取最新温湿度数据 API ==================== */
+
+int proto_get_last_temp_humidity(float *temp_c, float *humidity_rh)
+{
+    if (!g_proto.initialized) return APP_ERR_PROTO_NOT_INIT;
+    if (!temp_c || !humidity_rh) return APP_ERR_INVALID_PARAM;
+
+    xSemaphoreTake(g_proto.mutex, portMAX_DELAY);
+
+    if (!g_proto.has_latest_temp) {
+        xSemaphoreGive(g_proto.mutex);
+        *temp_c = 0.0f;
+        *humidity_rh = 0.0f;
+        return APP_ERR_PROTO_NO_DATA;
+    }
+
+    *temp_c = g_proto.latest_temp.temperature_c;
+    *humidity_rh = g_proto.latest_temp.humidity_rh;
+
+    xSemaphoreGive(g_proto.mutex);
+
+    return APP_ERR_OK;
 }

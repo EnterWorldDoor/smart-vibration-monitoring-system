@@ -32,22 +32,114 @@ static int g_callback_count = 0;
 
 /* 出厂默认配置 */
 static const struct system_config DEFAULT_CONFIG = {
+    /* 元数据 */
     .config_version          = CONFIG_VERSION,
-    .crc32                  = 0,
-    .sample_rate_hz         = 100,
-    .sensor_buffer_size     = 512,
-    .fft_size               = 512,
-    .rms_warning_threshold  = 2.0f,
-    .rms_critical_threshold = 4.0f,
-    .freq_peak_threshold    = 0.5f,
+    .crc32                   = 0,
+
+    /* ADXL345 加速度计 */
+    .adxl345_spi_host_id     = 1,           /* SPI2_HOST */
+    .adxl345_gpio_cs         = 5,
+    .adxl345_gpio_miso       = 19,
+    .adxl345_gpio_mosi       = 23,
+    .adxl345_gpio_sclk       = 18,
+    .adxl345_clock_speed_hz  = 5000000,     /* 5MHz */
+    .adxl345_range           = 3,           /* ADXL345_RANGE_16G */
+    .adxl345_data_rate       = 12,          /* ADXL345_RATE_400 (400Hz) */
+    .adxl345_fifo_mode       = 2,           /* FIFO Stream */
+    .adxl345_ma_window_size  = 16,
+
+    /* DSP 数字信号处理 */
+    .fft_size                 = 512,
+    .dsp_window_type          = 1,           /* DSP_WINDOW_HANN */
+    .dsp_enable_dc_removal    = true,
+    .rms_warning_threshold    = 2.0f,
+    .rms_critical_threshold  = 4.0f,
+    .freq_peak_threshold      = 0.5f,
+
+    /* Temperature Compensation 温度补偿 */
+    .temp_comp_enabled              = true,
+    .temp_comp_ewma_alpha           = 0.1f,
+    .temp_comp_change_threshold    = 0.5f,
+    .temp_comp_rate_threshold       = 1.0f,
+    .temp_comp_stale_data_ms        = 5000,
+
+    /* Sensor Service 传感器服务 */
+    .sample_rate_hz                 = 400,
+    .sensor_buffer_size             = 1024,
+    .analysis_interval_ms           = 1000,
+    .sensor_enable_temp_from_protocol = true,
+    .sensor_enable_detailed_log     = false,
+
+   
+
+    /* Protocol UART 协议 */
+    .protocol_uart_num             = 4,        /* UART_NUM_4 */
+    .protocol_baud_rate            = 115200,
+    .protocol_tx_pin               = 17,
+    .protocol_rx_pin               = 16,
+    .protocol_enable_ack           = true,
+    .protocol_enable_heartbeat     = true,
+    .protocol_ack_timeout_ms       = 500,
+    .protocol_heartbeat_interval_ms = 1000,
+    .protocol_max_retries          = 3,
+    .protocol_debug_dump            = false,
+
+    /* MQTT 通信配置 */
+    .mqtt_mode                     = 0,           /* MQTT_MODE_TRAINING (PC) */
+    .mqtt_broker_url               = "mqtt://192.168.43.23:1883",  /* ⚠️ 修正：PC端IP(手机热点网段) */
+    .mqtt_broker_port              = 1883,
+    .mqtt_username                 = "",
+    .mqtt_password                 = "",
+    .mqtt_client_id                = "EdgeVib-Default",
+    .mqtt_qos                      = 1,
+    .mqtt_enable_tls               = false,
+    .mqtt_clean_session            = true,
+    .mqtt_keepalive_sec            = 120,
+    .mqtt_publish_interval_ms      = 1000,
+    .mqtt_num_virtual_devices      = 1,           /* 不模拟 */
+    .mqtt_enable_lwt               = true,
+    .mqtt_lwt_topic                = "edgevib/status",
+    .mqtt_publish_vibration        = true,
+    .mqtt_publish_environment      = true,
+    .mqtt_publish_health           = false,
+
+    /* AI 配置 */
     .ai_anomaly_threshold   = 0.7f,
+
+    /* 通信配置 */
     .heartbeat_interval_ms  = 1000,
     .device_id              = 1,
     .device_name            = "EdgeVib-Sensor",
     .gateway_url            = "mqtt://gateway.local",
+    
+    /* 安全配置 */
     .encryption_enabled     = false,
+    
+    /* 系统配置 */
     .auto_reboot_enabled    = false,
     .reboot_interval_seconds = 86400,
+
+    /* OTA 升级配置 */
+    .ota_server_url        = "http://firmware.example.com",
+    .ota_firmware_path     = "/edgevib/firmware.bin",
+    .ota_version_url       = "http://firmware.example.com/version.json",
+    .ota_timeout_ms        = 30000,
+    .ota_buffer_size       = 4096,
+    .ota_max_retries       = 3,
+    .ota_auto_check_enabled = false,
+    .ota_check_interval_s  = 3600,
+    .ota_verify_sha256     = true,
+    .ota_rollback_on_failure = true,
+
+    /* 时间同步配置 */
+    .timezone               = "CST-8",
+    .sntp_server1          = "pool.ntp.org",
+    .sntp_server2          = "time.google.com",
+    .sntp_sync_timeout_ms  = 10000,
+    .sntp_retry_interval_ms = 5000,
+    .sntp_max_retries      = 3,
+    .sntp_auto_sync_enabled = true,
+    .sntp_sync_interval_s  = 3600,
 };
 
 /**
@@ -173,8 +265,22 @@ int config_manager_validate(const struct system_config *cfg)
         LOG_ERROR("CFG", "validate: null pointer");
         return APP_ERR_INVALID_PARAM;
     }
+
     if (cfg->sample_rate_hz < 1 || cfg->sample_rate_hz > 16000) {
         LOG_WARN("CFG", "validate fail: sample_rate_hz=%d out of [1,16000]", cfg->sample_rate_hz);
+        return APP_ERR_CONFIG_VALIDATION;
+    }
+
+    /* FFT 必须为 2 的幂 */
+    if (cfg->fft_size < 64 || cfg->fft_size > 4096 ||
+        (cfg->fft_size & (cfg->fft_size - 1)) != 0) {
+        LOG_WARN("CFG", "validate fail: fft_size=%d not power of 2 in [64,4096]", cfg->fft_size);
+        return APP_ERR_CONFIG_VALIDATION;
+    }
+
+    /* EWMA alpha 范围 */
+    if (cfg->temp_comp_ewma_alpha <= 0.0f || cfg->temp_comp_ewma_alpha >= 1.0f) {
+        LOG_WARN("CFG", "validate fail: ewma_alpha=%.3f out of (0,1)", cfg->temp_comp_ewma_alpha);
         return APP_ERR_CONFIG_VALIDATION;
     }
     if (cfg->sensor_buffer_size < 64 || cfg->sensor_buffer_size > 4096) {
@@ -566,4 +672,403 @@ int config_manager_unregister_callback(config_change_callback_t cb)
     }
     LOG_WARN("CFG", "unregister_cb: not found");
     return APP_ERR_NOT_SUPPORTED;
+}
+
+/* ==================== ADXL345 配置 Getter/Setter ==================== */
+
+void config_manager_get_adxl345_spi_config(int *host_id_out, int *cs_out,
+                                            int *miso_out, int *mosi_out,
+                                            int *sclk_out, int *clock_hz_out)
+{
+    if (!g_initialized) {
+        if (host_id_out) *host_id_out = DEFAULT_CONFIG.adxl345_spi_host_id;
+        if (cs_out) *cs_out = DEFAULT_CONFIG.adxl345_gpio_cs;
+        if (miso_out) *miso_out = DEFAULT_CONFIG.adxl345_gpio_miso;
+        if (mosi_out) *mosi_out = DEFAULT_CONFIG.adxl345_gpio_mosi;
+        if (sclk_out) *sclk_out = DEFAULT_CONFIG.adxl345_gpio_sclk;
+        if (clock_hz_out) *clock_hz_out = DEFAULT_CONFIG.adxl345_clock_speed_hz;
+        return;
+    }
+    xSemaphoreTake(g_mutex, portMAX_DELAY);
+    if (host_id_out) *host_id_out = g_config.adxl345_spi_host_id;
+    if (cs_out) *cs_out = g_config.adxl345_gpio_cs;
+    if (miso_out) *miso_out = g_config.adxl345_gpio_miso;
+    if (mosi_out) *mosi_out = g_config.adxl345_gpio_mosi;
+    if (sclk_out) *sclk_out = g_config.adxl345_gpio_sclk;
+    if (clock_hz_out) *clock_hz_out = g_config.adxl345_clock_speed_hz;
+    xSemaphoreGive(g_mutex);
+}
+
+int config_manager_get_adxl345_range(void)
+{
+    if (!g_initialized) return DEFAULT_CONFIG.adxl345_range;
+    xSemaphoreTake(g_mutex, portMAX_DELAY);
+    int val = g_config.adxl345_range;
+    xSemaphoreGive(g_mutex);
+    return val;
+}
+
+int config_manager_set_adxl345_range(int range)
+{
+    if (range < 0 || range > 3) return APP_ERR_CONFIG_VALIDATION;
+    if (!g_initialized || !g_mutex) return APP_ERR_GENERAL;
+    xSemaphoreTake(g_mutex, portMAX_DELAY);
+    int old = g_config.adxl345_range;
+    g_config.adxl345_range = range;
+    int ret = save_to_nvs(&g_config);
+    if (ret == APP_ERR_OK) notify_config_change("adxl345_range", &old, &range);
+    xSemaphoreGive(g_mutex);
+    return ret;
+}
+
+int config_manager_get_adxl345_data_rate(void)
+{
+    if (!g_initialized) return DEFAULT_CONFIG.adxl345_data_rate;
+    xSemaphoreTake(g_mutex, portMAX_DELAY);
+    int val = g_config.adxl345_data_rate;
+    xSemaphoreGive(g_mutex);
+    return val;
+}
+
+int config_manager_set_adxl345_data_rate(int rate)
+{
+    if (!g_initialized || !g_mutex) return APP_ERR_GENERAL;
+    xSemaphoreTake(g_mutex, portMAX_DELAY);
+    int old = g_config.adxl345_data_rate;
+    g_config.adxl345_data_rate = rate;
+    int ret = save_to_nvs(&g_config);
+    if (ret == APP_ERR_OK) notify_config_change("adxl345_data_rate", &old, &rate);
+    xSemaphoreGive(g_mutex);
+    return ret;
+}
+
+/* ==================== DSP 配置 Getter/Setter ==================== */
+
+int config_manager_get_dsp_window_type(void)
+{
+    if (!g_initialized) return DEFAULT_CONFIG.dsp_window_type;
+    xSemaphoreTake(g_mutex, portMAX_DELAY);
+    int val = g_config.dsp_window_type;
+    xSemaphoreGive(g_mutex);
+    return val;
+}
+
+int config_manager_set_dsp_window_type(int window_type)
+{
+    if (window_type < 0 || window_type > 4) return APP_ERR_CONFIG_VALIDATION;
+    if (!g_initialized || !g_mutex) return APP_ERR_GENERAL;
+    xSemaphoreTake(g_mutex, portMAX_DELAY);
+    int old = g_config.dsp_window_type;
+    g_config.dsp_window_type = window_type;
+    int ret = save_to_nvs(&g_config);
+    if (ret == APP_ERR_OK) notify_config_change("dsp_window_type", &old, &window_type);
+    xSemaphoreGive(g_mutex);
+    return ret;
+}
+
+bool config_manager_get_dsp_dc_removal(void)
+{
+    if (!g_initialized) return DEFAULT_CONFIG.dsp_enable_dc_removal;
+    xSemaphoreTake(g_mutex, portMAX_DELAY);
+    bool val = g_config.dsp_enable_dc_removal;
+    xSemaphoreGive(g_mutex);
+    return val;
+}
+
+void config_manager_set_dsp_dc_removal(bool enable)
+{
+    if (!g_initialized || !g_mutex) return;
+    xSemaphoreTake(g_mutex, portMAX_DELAY);
+    bool old = g_config.dsp_enable_dc_removal;
+    g_config.dsp_enable_dc_removal = enable;
+    save_to_nvs(&g_config);
+    notify_config_change("dsp_dc_removal", &old, &enable);
+    xSemaphoreGive(g_mutex);
+}
+
+/* ==================== Temperature Compensation 配置 Getter/Setter ==================== */
+
+bool config_manager_get_temp_comp_enabled(void)
+{
+    if (!g_initialized) return DEFAULT_CONFIG.temp_comp_enabled;
+    xSemaphoreTake(g_mutex, portMAX_DELAY);
+    bool val = g_config.temp_comp_enabled;
+    xSemaphoreGive(g_mutex);
+    return val;
+}
+
+void config_manager_set_temp_comp_enabled(bool enabled)
+{
+    if (!g_initialized || !g_mutex) return;
+    xSemaphoreTake(g_mutex, portMAX_DELAY);
+    bool old = g_config.temp_comp_enabled;
+    g_config.temp_comp_enabled = enabled;
+    save_to_nvs(&g_config);
+    notify_config_change("temp_comp_enabled", &old, &enabled);
+    xSemaphoreGive(g_mutex);
+}
+
+float config_manager_get_temp_comp_ewma_alpha(void)
+{
+    if (!g_initialized) return DEFAULT_CONFIG.temp_comp_ewma_alpha;
+    xSemaphoreTake(g_mutex, portMAX_DELAY);
+    float val = g_config.temp_comp_ewma_alpha;
+    xSemaphoreGive(g_mutex);
+    return val;
+}
+
+int config_manager_set_temp_comp_ewma_alpha(float alpha)
+{
+    if (alpha <= 0.0f || alpha >= 1.0f) return APP_ERR_CONFIG_VALIDATION;
+    if (!g_initialized || !g_mutex) return APP_ERR_GENERAL;
+    xSemaphoreTake(g_mutex, portMAX_DELAY);
+    float old = g_config.temp_comp_ewma_alpha;
+    g_config.temp_comp_ewma_alpha = alpha;
+    int ret = save_to_nvs(&g_config);
+    if (ret == APP_ERR_OK) notify_config_change("temp_comp_ewma_alpha", &old, &alpha);
+    xSemaphoreGive(g_mutex);
+    return ret;
+}
+
+float config_manager_get_temp_comp_change_threshold(void)
+{
+    if (!g_initialized) return DEFAULT_CONFIG.temp_comp_change_threshold;
+    xSemaphoreTake(g_mutex, portMAX_DELAY);
+    float val = g_config.temp_comp_change_threshold;
+    xSemaphoreGive(g_mutex);
+    return val;
+}
+
+int config_manager_set_temp_comp_change_threshold(float threshold)
+{
+    if (!g_initialized || !g_mutex) return APP_ERR_GENERAL;
+    xSemaphoreTake(g_mutex, portMAX_DELAY);
+    float old = g_config.temp_comp_change_threshold;
+    g_config.temp_comp_change_threshold = threshold;
+    int ret = save_to_nvs(&g_config);
+    if (ret == APP_ERR_OK) notify_config_change("temp_comp_change_thold", &old, &threshold);
+    xSemaphoreGive(g_mutex);
+    return ret;
+}
+
+/* ==================== Sensor Service 配置 Getter/Setter ==================== */
+
+uint32_t config_manager_get_analysis_interval(void)
+{
+    if (!g_initialized) return DEFAULT_CONFIG.analysis_interval_ms;
+    xSemaphoreTake(g_mutex, portMAX_DELAY);
+    uint32_t val = g_config.analysis_interval_ms;
+    xSemaphoreGive(g_mutex);
+    return val;
+}
+
+int config_manager_set_analysis_interval(uint32_t interval_ms)
+{
+    if (interval_ms < 100 || interval_ms > 60000) return APP_ERR_CONFIG_VALIDATION;
+    if (!g_initialized || !g_mutex) return APP_ERR_GENERAL;
+    xSemaphoreTake(g_mutex, portMAX_DELAY);
+    uint32_t old = g_config.analysis_interval_ms;
+    g_config.analysis_interval_ms = interval_ms;
+    int ret = save_to_nvs(&g_config);
+    if (ret == APP_ERR_OK) notify_config_change("analysis_interval", &old, &interval_ms);
+    xSemaphoreGive(g_mutex);
+    return ret;
+}
+
+bool config_manager_get_sensor_protocol_temp(void)
+{
+    if (!g_initialized) return DEFAULT_CONFIG.sensor_enable_temp_from_protocol;
+    xSemaphoreTake(g_mutex, portMAX_DELAY);
+    bool val = g_config.sensor_enable_temp_from_protocol;
+    xSemaphoreGive(g_mutex);
+    return val;
+}
+
+void config_manager_set_sensor_protocol_temp(bool enable)
+{
+    if (!g_initialized || !g_mutex) return;
+    xSemaphoreTake(g_mutex, portMAX_DELAY);
+    bool old = g_config.sensor_enable_temp_from_protocol;
+    g_config.sensor_enable_temp_from_protocol = enable;
+    save_to_nvs(&g_config);
+    notify_config_change("sensor_proto_temp", &old, &enable);
+    xSemaphoreGive(g_mutex);
+}
+/* ==================== Protocol 配置 Getter/Setter ==================== */
+
+int config_manager_get_protocol_uart_config(int *uart_num, int *baud_rate,
+                                             int *tx_pin, int *rx_pin)
+{
+    if (!g_initialized) {
+        if (uart_num) *uart_num = DEFAULT_CONFIG.protocol_uart_num;
+        if (baud_rate) *baud_rate = DEFAULT_CONFIG.protocol_baud_rate;
+        if (tx_pin) *tx_pin = DEFAULT_CONFIG.protocol_tx_pin;
+        if (rx_pin) *rx_pin = DEFAULT_CONFIG.protocol_rx_pin;
+        return APP_ERR_OK;
+    }
+    xSemaphoreTake(g_mutex, portMAX_DELAY);
+    if (uart_num) *uart_num = g_config.protocol_uart_num;
+    if (baud_rate) *baud_rate = g_config.protocol_baud_rate;
+    if (tx_pin) *tx_pin = g_config.protocol_tx_pin;
+    if (rx_pin) *rx_pin = g_config.protocol_rx_pin;
+    xSemaphoreGive(g_mutex);
+    return APP_ERR_OK;
+}
+
+bool config_manager_get_protocol_ack_enabled(void)
+{
+    if (!g_initialized) return DEFAULT_CONFIG.protocol_enable_ack;
+    xSemaphoreTake(g_mutex, portMAX_DELAY);
+    bool val = g_config.protocol_enable_ack;
+    xSemaphoreGive(g_mutex);
+    return val;
+}
+
+uint32_t config_manager_get_protocol_heartbeat_interval(void)
+{
+    if (!g_initialized) return DEFAULT_CONFIG.protocol_heartbeat_interval_ms;
+    xSemaphoreTake(g_mutex, portMAX_DELAY);
+    uint32_t val = g_config.protocol_heartbeat_interval_ms;
+    xSemaphoreGive(g_mutex);
+    return val;
+}
+
+/* ==================== MQTT 配置 Getter/Setter ==================== */
+
+int config_manager_get_mqtt_mode(void)
+{
+    if (!g_initialized) return DEFAULT_CONFIG.mqtt_mode;
+    xSemaphoreTake(g_mutex, portMAX_DELAY);
+    int val = g_config.mqtt_mode;
+    xSemaphoreGive(g_mutex);
+    return val;
+}
+
+int config_manager_set_mqtt_mode(int mode)
+{
+    if (mode != 0 && mode != 1) return APP_ERR_CONFIG_VALIDATION;
+    if (!g_initialized || !g_mutex) return APP_ERR_GENERAL;
+    xSemaphoreTake(g_mutex, portMAX_DELAY);
+    int old = g_config.mqtt_mode;
+    g_config.mqtt_mode = mode;
+    int ret = save_to_nvs(&g_config);
+    if (ret == APP_ERR_OK) notify_config_change("mqtt_mode", &old, &mode);
+    xSemaphoreGive(g_mutex);
+    return ret;
+}
+
+void config_manager_get_mqtt_broker_url(char *url_out, size_t buf_len)
+{
+    if (!url_out || buf_len == 0) return;
+    if (!g_initialized) {
+        strncpy(url_out, DEFAULT_CONFIG.mqtt_broker_url, buf_len - 1);
+        url_out[buf_len - 1] = '\0';
+        return;
+    }
+    xSemaphoreTake(g_mutex, portMAX_DELAY);
+    strncpy(url_out, g_config.mqtt_broker_url, buf_len - 1);
+    url_out[buf_len - 1] = '\0';
+    xSemaphoreGive(g_mutex);
+}
+
+int config_manager_set_mqtt_broker_url(const char *url)
+{
+    if (!url) return APP_ERR_INVALID_PARAM;
+    if (strlen(url) >= sizeof(((struct system_config *)0)->mqtt_broker_url)) {
+        return APP_ERR_CONFIG_VALIDATION;
+    }
+    if (!g_initialized || !g_mutex) return APP_ERR_GENERAL;
+    xSemaphoreTake(g_mutex, portMAX_DELAY);
+    char old[sizeof(g_config.mqtt_broker_url)];
+    strncpy(old, g_config.mqtt_broker_url, sizeof(old) - 1);
+    strncpy(g_config.mqtt_broker_url, url, sizeof(g_config.mqtt_broker_url) - 1);
+    g_config.mqtt_broker_url[sizeof(g_config.mqtt_broker_url) - 1] = '\0';
+    int ret = save_to_nvs(&g_config);
+    if (ret == APP_ERR_OK) notify_config_change("mqtt_broker_url", old, url);
+    xSemaphoreGive(g_mutex);
+    return ret;
+}
+
+uint16_t config_manager_get_mqtt_port(void)
+{
+    if (!g_initialized) return DEFAULT_CONFIG.mqtt_broker_port;
+    xSemaphoreTake(g_mutex, portMAX_DELAY);
+    uint16_t val = g_config.mqtt_broker_port;
+    xSemaphoreGive(g_mutex);
+    return val;
+}
+
+int config_manager_set_mqtt_port(uint16_t port)
+{
+    if (port == 0) return APP_ERR_CONFIG_VALIDATION;
+    if (!g_initialized || !g_mutex) return APP_ERR_GENERAL;
+    xSemaphoreTake(g_mutex, portMAX_DELAY);
+    uint16_t old = g_config.mqtt_broker_port;
+    g_config.mqtt_broker_port = port;
+    int ret = save_to_nvs(&g_config);
+    if (ret == APP_ERR_OK) notify_config_change("mqtt_port", &old, &port);
+    xSemaphoreGive(g_mutex);
+    return ret;
+}
+
+uint8_t config_manager_get_mqtt_qos(void)
+{
+    if (!g_initialized) return DEFAULT_CONFIG.mqtt_qos;
+    xSemaphoreTake(g_mutex, portMAX_DELAY);
+    uint8_t val = g_config.mqtt_qos;
+    xSemaphoreGive(g_mutex);
+    return val;
+}
+
+bool config_manager_get_mqtt_tls_enabled(void)
+{
+    if (!g_initialized) return DEFAULT_CONFIG.mqtt_enable_tls;
+    xSemaphoreTake(g_mutex, portMAX_DELAY);
+    bool val = g_config.mqtt_enable_tls;
+    xSemaphoreGive(g_mutex);
+    return val;
+}
+
+uint32_t config_manager_get_mqtt_publish_interval(void)
+{
+    if (!g_initialized) return DEFAULT_CONFIG.mqtt_publish_interval_ms;
+    xSemaphoreTake(g_mutex, portMAX_DELAY);
+    uint32_t val = g_config.mqtt_publish_interval_ms;
+    xSemaphoreGive(g_mutex);
+    return val;
+}
+
+int config_manager_set_mqtt_publish_interval(uint32_t interval_ms)
+{
+    if (interval_ms < 100 || interval_ms > 3600000) return APP_ERR_CONFIG_VALIDATION;
+    if (!g_initialized || !g_mutex) return APP_ERR_GENERAL;
+    xSemaphoreTake(g_mutex, portMAX_DELAY);
+    uint32_t old = g_config.mqtt_publish_interval_ms;
+    g_config.mqtt_publish_interval_ms = interval_ms;
+    int ret = save_to_nvs(&g_config);
+    if (ret == APP_ERR_OK) notify_config_change("mqtt_pub_intv", &old, &interval_ms);
+    xSemaphoreGive(g_mutex);
+    return ret;
+}
+
+uint8_t config_manager_get_mqtt_virtual_device_count(void)
+{
+    if (!g_initialized) return DEFAULT_CONFIG.mqtt_num_virtual_devices;
+    xSemaphoreTake(g_mutex, portMAX_DELAY);
+    uint8_t val = g_config.mqtt_num_virtual_devices;
+    xSemaphoreGive(g_mutex);
+    return val;
+}
+
+int config_manager_set_mqtt_virtual_device_count(uint8_t count)
+{
+    if (count < 1 || count > 8) return APP_ERR_CONFIG_VALIDATION;
+    if (!g_initialized || !g_mutex) return APP_ERR_GENERAL;
+    xSemaphoreTake(g_mutex, portMAX_DELAY);
+    uint8_t old = g_config.mqtt_num_virtual_devices;
+    g_config.mqtt_num_virtual_devices = count;
+    int ret = save_to_nvs(&g_config);
+    if (ret == APP_ERR_OK) notify_config_change("mqtt_virt_devs", &old, &count);
+    xSemaphoreGive(g_mutex);
+    return ret;
 }

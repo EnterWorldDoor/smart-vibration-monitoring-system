@@ -1,0 +1,21 @@
+# EdgeVib Inference Configuration
+
+# ==================== 推理引擎配置 ====================
+inference:
+  confidence_threshold: 0.85
+  model_dir: "models/saved_models"
+  max_cache_size: 100
+
+# ==================== 实时处理配置 ====================
+realtime:
+  window_size: 256
+  step_size: 128
+  input_channels: 6
+  max_buffer_size: 512
+
+# ==================== MQTT桥接配置 ====================
+mqtt_bridge:
+  broker_host: "localhost"
+  broker_port: 1883
+  input_topic: "edgevib/train/#"
+  output_topic_prefix: "edgevib/inference"

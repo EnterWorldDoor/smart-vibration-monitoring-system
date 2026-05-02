@@ -1,0 +1,78 @@
+# EdgeVib Data Collection Configuration
+# 用于 mqtt_subscriber.py 和其他数据采集模块
+
+# ==================== MQTT Broker配置 ====================
+mqtt:
+  broker_host: "localhost"       # Broker IP地址或主机名
+  broker_port: 1883              # Broker端口号
+  topic_prefix: "edgevib/train/" # Topic前缀 (自动追加#通配符)
+  qos: 1                         # QoS等级 (0=最多一次, 1=至少一次, 2=恰好一次)
+  keepalive: 60                  # 心跳间隔(秒)
+  reconnect_delay: 5             # 重连延迟(秒)
+  max_retries: 10                # 最大重连次数
+
+# ==================== 认证配置 (可选) ====================
+authentication:
+  enabled: false                 # 是否启用认证
+  username: ""                   # 用户名
+  password: ""                   # 密码
+  # TLS配置 (生产环境必须启用!)
+  tls:
+    enabled: false
+    ca_certs: ""                 # CA证书路径
+    certfile: ""                 # 客户端证书路径
+    keyfile: ""                  # 客户端私钥路径
+
+# ==================== 输出配置 ====================
+output:
+  file_path: "datasets/training_data.csv"  # 输出CSV文件路径
+  buffer_size: 100               # 缓冲区大小 (多少条记录刷新一次磁盘)
+  encoding: "utf-8"              # 文件编码
+  backup_enabled: true           # 是否启用自动备份
+  backup_interval: 3600          # 备份间隔(秒), 默认每小时备份一次
+
+# ==================== 数据验证规则 ====================
+validation:
+  required_fields:               # 必填字段列表
+    - timestamp_ms
+    - dev_id
+    - rms_x
+    - rms_y
+    - rms_z
+    - overall_rms
+    - peak_freq
+    - peak_amp
+    - temperature_c
+    - humidity_rh
+  
+  ranges:                        # 数据范围约束
+    rms_acceleration_g: [-10.0, 10.0]   # RMS加速度范围 (±g)
+    temperature_c: [-40.0, 125.0]        # 温度范围 (°C)
+    humidity_rh: [0.0, 100.0]           # 湿度范围 (%RH)
+    peak_freq_hz: [0.0, 2000.0]         # 主频率范围 (Hz)
+  
+  timestamp:
+    max_gap_ms: 5000             # 允许的最大时间戳间隔 (毫秒)
+    allow_reorder: false         # 是否允许乱序消息
+  
+  anomaly_detection:             # 异常值检测
+    enabled: true
+    method: "zscore"             # 检测方法: zscore / iqr / isolation_forest
+    threshold: 3.0               # Z-Score阈值 (超过此值视为异常)
+
+# ==================== 日志配置 ====================
+logging:
+  level: "INFO"                  # 日志级别: DEBUG / INFO / WARNING / ERROR
+  format: "%(asctime)s | %(levelname)-8s | %(message)s"
+  date_format: "%Y-%m-%d %H:%M:%S"
+  file_logging:                  # 文件日志 (可选)
+    enabled: false
+    path: "logs/mqtt_collector.log"
+    max_size_mb: 10              # 单个日志文件最大大小(MB)
+    backup_count: 5              # 保留的旧日志文件数量
+
+# ==================== 性能调优 ====================
+performance:
+  worker_threads: 1              # 工作线程数 (通常1个足够,因为IO密集型)
+  message_queue_size: 1000       # 内部消息队列大小
+  statistics_interval: 50        # 统计信息打印间隔 (每N条有效记录)
