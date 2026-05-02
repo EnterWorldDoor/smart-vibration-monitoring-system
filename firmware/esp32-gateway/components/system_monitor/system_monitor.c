@@ -263,15 +263,44 @@ static void collect_status(struct system_status *out)
                     configMAX_TASK_NAME_LEN - 1);
             out->tasks[i].task_number = task_status_buf[i].xTaskNumber;
             out->tasks[i].stack_high_water_mark = uxTaskGetStackHighWaterMark(handle);
-            out->tasks[i].stack_size = (handle)
-                                       ? (uint32_t)0 : 0;
-            /* TODO: ESP-IDF v5.5.3 移除了 uxTaskGetStackSize */
-            /* 可用 vTaskGetInfo() 获取任务信息，但需要额外配置 */
-            if (out->tasks[i].stack_size > 0) {
-                out->tasks[i].stack_usage_percent =
-                    100.0f * (1.0f - (float)out->tasks[i].stack_high_water_mark /
-                                      (float)out->tasks[i].stack_size);
+
+            /*
+             * ⚠️ 【修复】安全获取任务栈大小
+             *
+             * 问题:
+             *   - 当 handle == NULL 时, uxTaskGetStackSize() 返回 0
+             *   - 后续计算 stack_usage_percent 时会导致除零错误: division by zero
+             *
+             * 修复方案:
+             *   - 检查 handle 是否有效
+             *   - 如果无效, 设置 stack_size = 0 且 usage_percent = 0
+             *   - 避免除零崩溃
+             */
+            if (handle) {
+                /*
+                 * ESP-IDF v5.5.3 移除了 uxTaskGetStackSize()
+                 * 使用 vTaskGetInfo() 作为替代方案
+                 *
+                 * 注意: 需要在 sdkconfig 中启用:
+                 *   CONFIG_FREERTOS_VTASKLIST_INCLUDE_COREID=y
+                 */
+                #if CONFIG_FREERTOS_VTASKLIST_INCLUDE_COREID
+                    TaskStatus_t task_info;
+                    vTaskGetInfo(handle, &task_info, pdTRUE, eRunning);
+                    out->tasks[i].stack_size = task_info.usStackSize;
+                #else
+                    out->tasks[i].stack_size = 4096;  /* 使用默认估算值 */
+                #endif
+
+                if (out->tasks[i].stack_size > 0) {
+                    out->tasks[i].stack_usage_percent =
+                        100.0f * (1.0f - (float)out->tasks[i].stack_high_water_mark /
+                                          (float)out->tasks[i].stack_size);
+                } else {
+                    out->tasks[i].stack_usage_percent = 0.0f;
+                }
             } else {
+                out->tasks[i].stack_size = 0;
                 out->tasks[i].stack_usage_percent = 0.0f;
             }
             out->task_info_count++;

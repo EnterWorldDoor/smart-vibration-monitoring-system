@@ -1,0 +1,77 @@
+# EdgeVib Data Collection Configuration
+# 用于 mqtt_subscriber.py 和其他数据采集模块
+
+# ==================== MQTT Broker配置 ====================
+mqtt:
+  broker_host: "localhost"
+  broker_port: 1883
+  topic_prefix: "edgevib/train/"
+  qos: 1
+  keepalive: 60
+  reconnect_delay: 5
+  max_retries: 10
+
+# ==================== 认证配置 ====================
+authentication:
+  enabled: false
+  username: ""
+  password: ""
+  tls:
+    enabled: false
+    ca_certs: ""
+    certfile: ""
+    keyfile: ""
+
+# ==================== 输出配置 ====================
+output:
+  file_path: "datasets/training_data.csv"
+  buffer_size: 100
+  encoding: "utf-8"
+  backup_enabled: true
+  backup_interval: 3600
+
+# ==================== 数据验证规则 ====================
+validation:
+  required_fields:
+    - timestamp_ms
+    - dev_id
+    - rms_x
+    - rms_y
+    - rms_z
+    - overall_rms
+    - peak_freq
+    - peak_amp
+    - temperature_c
+    - humidity_rh
+
+  ranges:
+    rms_acceleration_g: [-10.0, 10.0]
+    temperature_c: [-40.0, 125.0]
+    humidity_rh: [0.0, 100.0]
+    peak_freq_hz: [0.0, 2000.0]
+
+  timestamp:
+    max_gap_ms: 5000
+    allow_reorder: false
+
+  anomaly_detection:
+    enabled: true
+    method: "zscore"
+    threshold: 3.0
+
+# ==================== 日志配置 ====================
+logging:
+  level: "INFO"
+  format: "%(asctime)s | %(levelname)-8s | %(message)s"
+  date_format: "%Y-%m-%d %H:%M:%S"
+  file_logging:
+    enabled: false
+    path: "logs/mqtt_collector.log"
+    max_size_mb: 10
+    backup_count: 5
+
+# ==================== 性能调优 ====================
+performance:
+  worker_threads: 1
+  message_queue_size: 1000
+  statistics_interval: 50

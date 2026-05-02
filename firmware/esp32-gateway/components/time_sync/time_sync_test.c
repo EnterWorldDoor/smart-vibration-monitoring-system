@@ -650,110 +650,28 @@ void test_get_time_info_concurrent_access_simulation(void)
     }
 }
 
-/* ================================================================
- *  Unity Test Runner Entry Point
- * ================================================================ */
+/*
+ * ================================================================
+ * Unity Test Runner Entry Point - 已禁用!
+ * ================================================================
+ *
+ * ⚠️⚠️⚠️ 重要说明 ⚠️⚠️⚠️
+ *
+ * 此文件原本包含两种类型的测试:
+ *   [A] 纯逻辑测试 (无需任何组件初始化)
+ *   [B] 集成测试 (需要组件完整初始化)
+ *
+ * 🔴 已删除 app_main() 函数!
+ * 原因: 避免与主程序 esp32-gateway.c 的 app_main() 冲突
+ *       导致 Guru Meditation Error (LoadProhibited) 系统崩溃
+ *
+ * 如需运行测试,请创建独立测试项目,不要在此文件中定义 app_main()
+ */
 
-void app_main(void)
-{
-    UNITY_BEGIN();
-
-    printf("\n====================================================\n");
-    printf("   EdgeVib Time Sync Unit Tests\n");
-    printf("====================================================\n\n");
-
-    /* 1. 生命周期管理 (7 tests) */
-    printf("--- Lifecycle Management ---\n");
-    RUN_TEST(test_init_sntp_mode_should_succeed);
-    RUN_TEST(test_init_local_mode_should_succeed);
-    RUN_TEST(test_init_twice_should_fail);
-    RUN_TEST(test_deinit_when_not_initialized_should_fail);
-    RUN_TEST(test_deinit_after_init_should_succeed);
-    RUN_TEST(test_deinit_and_reinit_should_work);
-    RUN_TEST(test_multiple_init_deinit_cycles);
-
-    /* 2. 初始状态查询 (4 tests) */
-    printf("\n--- Initial Status Query ---\n");
-    RUN_TEST(test_get_status_before_init_should_return_idle);
-    RUN_TEST(test_get_status_after_init_local_should_return_initialized);
-    RUN_TEST(test_is_synchronized_before_init_should_return_false);
-    RUN_TEST(test_is_synchronized_after_local_init_should_return_false);
-
-    /* 3. 时间戳获取 (4 tests) */
-    printf("\n--- Timestamp Retrieval ---\n");
-    RUN_TEST(test_get_timestamp_us_before_init_should_not_crash);
-    RUN_TEST(test_get_timestamp_ms_before_init_should_not_crash);
-    RUN_TEST(test_get_timestamp_us_after_local_init_should_be_positive);
-    RUN_TEST(test_get_timestamp_ms_should_match_us_divided_by_1000);
-
-    /* 4. get_time_info (4 tests) */
-    printf("\n--- Time Info Query ---\n");
-    RUN_TEST(test_get_time_info_null_param_should_fail);
-    RUN_TEST(test_get_time_info_before_init_should_fail);
-    RUN_TEST(test_get_time_info_after_local_init_should_have_valid_data);
-    RUN_TEST(test_get_time_info_timestamps_consistency);
-
-    /* 5. wait_sync 验证 (2 tests) */
-    printf("\n--- Wait Sync Validation ---\n");
-    RUN_TEST(test_wait_sync_before_init_should_fail);
-    RUN_TEST(test_wait_sync_in_local_mode_should_return_ok);
-
-    /* 6. force_sync 验证 (2 tests) */
-    printf("\n--- Force Sync Validation ---\n");
-    RUN_TEST(test_force_sync_before_init_should_fail);
-    RUN_TEST(test_force_sync_in_local_mode_should_fail);
-
-    /* 7. NTP 服务器管理 (7 tests) */
-    printf("\n--- NTP Server Management ---\n");
-    RUN_TEST(test_set_servers_null_param_should_fail);
-    RUN_TEST(test_set_servers_invalid_count_should_fail);
-    RUN_TEST(test_set_servers_before_init_should_fail);
-    RUN_TEST(test_set_servers_valid_should_succeed);
-    RUN_TEST(test_get_servers_null_param_should_fail);
-    RUN_TEST(test_get_servers_before_init_should_fail);
-    RUN_TEST(test_get_servers_after_init_should_return_data);
-    RUN_TEST(test_set_and_get_servers_roundtrip);
-
-    /* 8. 回调注册/注销 (7 tests) */
-    printf("\n--- Callback Registration ---\n");
-    RUN_TEST(test_register_callback_null_should_fail);
-    RUN_TEST(test_register_callback_before_init_should_fail);
-    RUN_TEST(test_register_callback_should_succeed);
-    RUN_TEST(test_register_duplicate_callback_should_not_add_again);
-    RUN_TEST(test_unregister_callback_null_should_fail);
-    RUN_TEST(test_unregister_callback_before_init_should_fail);
-    RUN_TEST(test_unregister_nonexistent_callback_should_fail);
-    RUN_TEST(test_register_and_unregister_callback_should_work);
-
-    /* 9. 错误码验证 (2 tests) */
-    printf("\n--- Error Code Constants ---\n");
-    RUN_TEST(test_time_error_codes_should_be_negative);
-    RUN_TEST(test_time_error_codes_should_be_in_correct_range);
-
-    /* 10. 配置常量验证 (1 test) */
-    printf("\n--- Configuration Constants ---\n");
-    RUN_TEST(test_config_constants_should_be_reasonable);
-
-    /* 11. 枚举值验证 (1 test) */
-    printf("\n--- Enum Value Validation ---\n");
-    RUN_TEST(test_sync_status_enum_values_should_sequential);
-
-    /* 12. 结构体验证 (3 tests) */
-    printf("\n--- Structure Validation ---\n");
-    RUN_TEST(test_struct_sizes_should_be_reasonable);
-    RUN_TEST(test_time_info_fields_should_exist);
-    RUN_TEST(test_sntp_server_config_fields_should_exist);
-
-    /* 13. 边界条件与压力测试 (4 tests) */
-    printf("\n--- Boundary Conditions & Stress Tests ---\n");
-    RUN_TEST(test_rapid_init_deinit_cycles);
-    RUN_TEST(test_multiple_timestamp_reads_consistency);
-    RUN_TEST(test_max_callbacks_registration);
-    RUN_TEST(test_get_time_info_concurrent_access_simulation);
-
-    int failures = UNITY_END();
-
-    printf("\n====================================================\n");
-    printf("   Time Sync Test Results: %d failures\n", failures);
-    printf("====================================================\n\n");
-}
+/* 以下测试入口已被永久移除 (2026-04-19):
+#ifdef CONFIG_UNITY_ZERO_DEPENDENCY_MODE
+void app_main(void) { ... }  // ← 已删除!
+#else
+void app_main(void) { ... }  // ← 已删除!
+#endif
+*/

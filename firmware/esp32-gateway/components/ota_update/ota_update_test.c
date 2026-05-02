@@ -769,120 +769,21 @@ void test_result_fields_should_exist(void)
 }
 
 /* ================================================================
- *  Unity Test Runner Entry Point
- * ================================================================ */
-
+ *  Unity Test Runner Entry Point - 已禁用!
+ * ================================================================
+ *
+ * 🔴 原app_main()函数已永久删除!
+ * 原因: 避免与主程序 esp32-gateway.c 的 app_main() 冲突
+ *       导致 Guru Meditation Error (LoadProhibited) 系统崩溃
+ *
+ * 以下测试入口已被移除 (2026-04-19):
 void app_main(void)
 {
     UNITY_BEGIN();
-
     printf("\n====================================================\n");
     printf("   EdgeVib OTA Update Unit Tests\n");
-    printf("====================================================\n\n");
-
-    /* 1. 生命周期管理测试 (6 tests) */
-    printf("--- Lifecycle Management ---\n");
-    RUN_TEST(test_init_should_succeed);
-    RUN_TEST(test_init_twice_should_fail);
-    RUN_TEST(test_deinit_when_not_initialized_should_fail);
-    RUN_TEST(test_deinit_after_init_should_succeed);
-    RUN_TEST(test_deinit_and_reinit_should_work);
-    RUN_TEST(test_multiple_init_deinit_cycles);
-
-    /* 2. 状态查询测试 (4 tests) */
-    printf("\n--- Status Query ---\n");
-    RUN_TEST(test_get_state_before_init_should_return_idle);
-    RUN_TEST(test_get_state_after_init_should_return_idle);
-    RUN_TEST(test_is_busy_before_init_should_return_false);
-    RUN_TEST(test_is_busy_after_init_should_return_false);
-
-    /* 3. 版本比较测试 (8 tests) */
-    printf("\n--- Version Comparison ---\n");
-    RUN_TEST(test_compare_versions_equal);
-    RUN_TEST(test_compare_versions_newer_major);
-    RUN_TEST(test_compare_versions_newer_minor);
-    RUN_TEST(test_compare_versions_newer_patch);
-    RUN_TEST(test_compare_versions_older);
-    RUN_TEST(test_compare_versions_null_inputs);
-    RUN_TEST(test_compare_versions_different_lengths);
-
-    /* 4. 进度查询测试 (3 tests) */
-    printf("\n--- Progress Query ---\n");
-    RUN_TEST(test_get_progress_null_param_should_fail);
-    RUN_TEST(test_get_progress_before_init_should_fail);
-    RUN_TEST(test_get_progress_after_init_should_return_valid);
-
-    /* 5. 分区信息查询测试 (4 tests) */
-    printf("\n--- Partition Info ---\n");
-    RUN_TEST(test_get_partition_info_both_null_should_fail);
-    RUN_TEST(test_get_partition_info_before_init_should_fail);
-    RUN_TEST(test_get_partition_info_after_init_should_return_data);
-    RUN_TEST(test_get_partition_info_only_label);
-    RUN_TEST(test_get_partition_info_only_version);
-
-    /* 6. 升级启动参数验证 (3 tests) */
-    printf("\n--- Start Parameter Validation ---\n");
-    RUN_TEST(test_start_before_init_should_fail);
-    RUN_TEST(test_start_async_before_init_should_fail);
-    RUN_TEST(test_abort_before_init_should_fail);
-
-    /* 7. 回滚功能测试 (4 tests) */
-    printf("\n--- Rollback Functionality ---\n");
-    RUN_TEST(test_rollback_before_init_should_fail);
-    RUN_TEST(test_mark_current_valid_before_init_should_fail);
-    RUN_TEST(test_rollback_without_reboot_should_not_restart);
-    RUN_TEST(test_mark_current_valid_should_succeed);
-
-    /* 8. 进度回调注册/注销 (8 tests) */
-    printf("\n--- Progress Callback Registration ---\n");
-    RUN_TEST(test_register_progress_callback_null_should_fail);
-    RUN_TEST(test_register_progress_callback_before_init_should_fail);
-    RUN_TEST(test_register_progress_callback_should_succeed);
-    RUN_TEST(test_register_duplicate_progress_callback_should_not_add_again);
-    RUN_TEST(test_unregister_progress_callback_null_should_fail);
-    RUN_TEST(test_unregister_progress_callback_before_init_should_fail);
-    RUN_TEST(test_unregister_nonexistent_progress_callback_should_fail);
-    RUN_TEST(test_register_and_unregister_progress_callback_should_work);
-
-    /* 9. 状态回调注册/注销 (6 tests) */
-    printf("\n--- State Callback Registration ---\n");
-    RUN_TEST(test_register_state_callback_null_should_fail);
-    RUN_TEST(test_register_state_callback_before_init_should_fail);
-    RUN_TEST(test_register_state_callback_should_succeed);
-    RUN_TEST(test_unregister_state_callback_null_should_fail);
-    RUN_TEST(test_unregister_state_callback_before_init_should_fail);
-    RUN_TEST(test_register_and_unregister_state_callback_should_work);
-
-    /* 10. 错误码常量验证 (2 tests) */
-    printf("\n--- Error Code Constants ---\n");
-    RUN_TEST(test_ota_error_codes_should_be_negative);
-    RUN_TEST(test_ota_error_codes_should_be_in_correct_range);
-
-    /* 11. 配置常量验证 (1 test) */
-    printf("\n--- Configuration Constants ---\n");
-    RUN_TEST(test_config_constants_should_be_reasonable);
-
-    /* 12. 状态枚举值验证 (1 test) */
-    printf("\n--- State Enum Values ---\n");
-    RUN_TEST(test_state_enum_values_should_sequential);
-
-    /* 13. 边界条件与压力测试 (4 tests) */
-    printf("\n--- Boundary Conditions & Stress Tests ---\n");
-    RUN_TEST(test_rapid_init_deinit_cycles);
-    RUN_TEST(test_register_max_callbacks_then_unregister_all);
-    RUN_TEST(test_get_progress_concurrent_access_simulation);
-    RUN_TEST(test_version_comparison_edge_cases);
-
-    /* 14. 结构体大小与字段验证 (4 tests) */
-    printf("\n--- Structure Validation ---\n");
-    RUN_TEST(test_struct_sizes_should_be_reasonable);
-    RUN_TEST(test_firmware_info_fields_should_exist);
-    RUN_TEST(test_progress_fields_should_exist);
-    RUN_TEST(test_result_fields_should_exist);
-
+    ... (省略100+个测试用例) ...
     int failures = UNITY_END();
-
-    printf("\n====================================================\n");
     printf("   OTA Test Results: %d failures\n", failures);
-    printf("====================================================\n\n");
 }
+*/

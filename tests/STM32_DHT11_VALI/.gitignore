@@ -1,0 +1,10 @@
+ #子目录专属屏蔽
+ build/
+ .vscode/
+ sdkconfig
+ Debug/
+ Release/
+ .settings/
+ .DS_Store
+ Thumbs.db
+ STM32_DHT11_VALI Debug.launch

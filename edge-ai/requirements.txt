@@ -1,0 +1,16 @@
+# EdgeVib Edge-AI Python Dependencies
+# 环境: Anaconda edgevib-tf (conda create -n edgevib-tf python=3.11)
+# 安装: conda activate edgevib-tf && pip install -r requirements.txt
+# 或直接使用 environment.yml: conda env create -f environment.yml
+
+tensorflow>=2.15.0,<2.17.0
+numpy>=1.24.0,<2.0.0
+pandas>=2.0.0
+paho-mqtt>=2.0.0
+pyyaml>=6.0
+scikit-learn>=1.3.0
+scipy>=1.10.0
+matplotlib>=3.7.0
+seaborn>=0.12.0
+psutil>=5.9.0
+tqdm>=4.65.0

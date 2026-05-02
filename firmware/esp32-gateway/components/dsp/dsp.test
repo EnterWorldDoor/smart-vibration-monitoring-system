@@ -1,0 +1,398 @@
+/**
+ * @file dsp_test.c
+ * @author EnterWorldDoor
+ * @brief DSP 数字信号处理模块单元测试（基于 Unity 框架）
+ *
+ * 测试覆盖范围:
+ *   - 常量与枚举值验证
+ *   - 数据结构体大小验证
+ *   - 参数验证 (NULL指针检查)
+ *   - 错误码定义验证
+ *   - RMS 计算正确性验证
+ *   - FFT 配置参数边界检查
+ *   - 窗函数类型枚举验证
+ *   - API接口存在性验证
+ */
+
+#include "unity.h"
+#include "dsp.h"
+#include "global_error.h"
+#include <string.h>
+#include <math.h>
+#include <stdint.h>
+
+/* ==================== 测试辅助变量 ==================== */
+
+static float test_signal[256];
+static struct dsp_config default_cfg = {
+    .default_fft_size = 128,
+    .window_type = DSP_WINDOW_HANN,
+    .enable_dc_removal = true
+};
+
+/* ==================== 测试辅助函数 ==================== */
+
+/**
+ * generate_sine_wave - 生成正弦波测试信号
+ * @buffer: 输出缓冲区
+ * @length: 样本数
+ * @amplitude: 幅度
+ * @frequency_hz: 频率 (Hz)
+ * @sample_rate: 采样率 (Hz)
+ */
+static void generate_sine_wave(float *buffer, int length,
+                               float amplitude, float frequency_hz,
+                               int sample_rate)
+{
+    for (int i = 0; i < length; i++) {
+        buffer[i] = amplitude * sinf(2.0f * M_PI * frequency_hz * i / sample_rate);
+    }
+}
+
+/**
+ * generate_constant_signal - 生成常量信号 (用于测试 DC 分量去除)
+ */
+static void generate_constant_signal(float *buffer, int length, float value)
+{
+    for (int i = 0; i < length; i++) {
+        buffer[i] = value;
+    }
+}
+
+/* ==================== 测试组：常量与枚举验证 ==================== */
+
+/**
+ * test_constants - 验证配置常量
+ */
+void test_constants(void)
+{
+    TEST_ASSERT_EQUAL_INT(2048, DSP_FFT_MAX_SIZE);
+    TEST_ASSERT_EQUAL_INT(1024, DSP_FFT_DEFAULT_SIZE);
+    TEST_ASSERT_EQUAL_INT(2048, DSP_MAX_WINDOW_COEFF);
+    TEST_ASSERT_EQUAL_INT(10, DSP_NUM_PEAKS);
+    TEST_ASSERT_EQUAL_INT(8, DSP_NUM_FREQUENCY_BANDS);
+}
+
+/**
+ * test_window_type_enum - 验证窗函数枚举值
+ */
+void test_window_type_enum(void)
+{
+    TEST_ASSERT_EQUAL_INT(0, DSP_WINDOW_RECTANGLE);
+    TEST_ASSERT_EQUAL_INT(1, DSP_WINDOW_HANN);
+    TEST_ASSERT_EQUAL_INT(2, DSP_WINDOW_HAMMING);
+    TEST_ASSERT_EQUAL_INT(3, DSP_WINDOW_BLACKMAN);
+    TEST_ASSERT_EQUAL_INT(4, DSP_WINDOW_FLATTOP);
+
+    /* 枚举唯一性 */
+    TEST_ASSERT_NOT_EQUAL(DSP_WINDOW_HANN, DSP_WINDOW_HAMMING);
+    TEST_ASSERT_NOT_EQUAL(DSP_WINDOW_BLACKMAN, DSP_WINDOW_FLATTOP);
+}
+
+/* ==================== 测试组：数据结构体大小验证 ==================== */
+
+/**
+ * test_struct_sizes - 验证关键结构体大小
+ */
+void test_struct_sizes(void)
+{
+    /* rms_result 结构体字段完整性 */
+    TEST_ASSERT_EQUAL(sizeof(float), sizeof(struct rms_result.value));
+    TEST_ASSERT_EQUAL(sizeof(float), sizeof(struct rms_result.mean));
+    TEST_ASSERT_EQUAL(sizeof(float), sizeof(struct rms_result.std_dev));
+    TEST_ASSERT_EQUAL(sizeof(float), sizeof(struct rms_result.peak));
+    TEST_ASSERT_EQUAL(sizeof(float), sizeof(struct rms_result.peak_to_peak));
+    TEST_ASSERT_EQUAL(sizeof(float), sizeof(struct rms_result.crest_factor));
+    TEST_ASSERT_EQUAL(sizeof(float), sizeof(struct rms_result.skewness));
+    TEST_ASSERT_EQUAL(sizeof(float), sizeof(struct rms_result.kurtosis));
+
+    /* freq_peak 结构体 */
+    TEST_ASSERT_EQUAL(sizeof(float), sizeof(struct freq_peak.frequency_hz));
+    TEST_ASSERT_EQUAL(sizeof(float), sizeof(struct freq_peak.amplitude));
+    TEST_ASSERT_EQUAL(sizeof(float), sizeof(struct freq_peak.phase_rad));
+
+    /* dsp_config 结构体 */
+    TEST_ASSERT_EQUAL(sizeof(uint16_t), sizeof(struct dsp_config.default_fft_size));
+}
+
+/* ==================== 测试组：初始化/反初始化测试 ==================== */
+
+/**
+ * test_init_uninitialized_state - 未初始化时操作应返回错误
+ */
+void test_init_uninitialized_state(void)
+{
+    struct rms_result rms;
+    struct fft_result fft;
+    float data[64];
+
+    TEST_ASSERT_FALSE(dsp_is_initialized());
+    TEST_ASSERT_EQUAL_INT(APP_ERR_DSP_NOT_INIT, dsp_compute_rms(data, 64, &rms));
+    TEST_ASSERT_EQUAL_INT(APP_ERR_DSP_NOT_INIT,
+                          dsp_compute_3axis_rms(data, data + 32, data + 16, 32, NULL));
+    TEST_ASSERT_EQUAL_INT(APP_ERR_DSP_NOT_INIT, dsp_deinit());
+}
+
+/**
+ * test_null_param_handling - NULL 参数处理
+ */
+void test_null_param_handling(void)
+{
+    TEST_ASSERT_EQUAL_INT(APP_ERR_INVALID_PARAM, dsp_init(NULL));
+    
+    dsp_init(&default_cfg);
+    TEST_ASSERT_EQUAL_INT(APP_ERR_INVALID_PARAM,
+                          dsp_compute_rms(NULL, 64, NULL));
+    TEST_ASSERT_EQUAL_INT(APP_ERR_INVALID_PARAM,
+                          dsp_compute_rms(test_signal, 0, NULL));
+    dsp_deinit();
+}
+
+/**
+ * test_init_success - 正常初始化流程
+ */
+void test_init_success(void)
+{
+    struct dsp_config cfg = {
+        .default_fft_size = 256,
+        .window_type = DSP_WINDOW_HANN,
+        .enable_dc_removal = true
+    };
+
+    int ret = dsp_init(&cfg);
+    TEST_ASSERT_EQUAL_INT(APP_ERR_OK, ret);
+    TEST_ASSERT_TRUE(dsp_is_initialized());
+
+    dsp_deinit();
+    TEST_ASSERT_FALSE(dsp_is_initialized());
+}
+
+/**
+ * test_init_default_config - 使用默认配置初始化
+ */
+void test_init_default_config(void)
+{
+    int ret = dsp_init(NULL);  /* NULL 使用默认配置 */
+    TEST_ASSERT_EQUAL_INT(APP_ERR_OK, ret);
+    TEST_ASSERT_TRUE(dsp_is_initialized());
+
+    dsp_deinit();
+}
+
+/* ==================== 测试组：RMS 计算测试 ==================== */
+
+/**
+ * test_rms_constant_signal - 常量信号 RMS 应等于该常量
+ */
+void test_rms_constant_signal(void)
+{
+    struct rms_result rms;
+
+    dsp_init(&default_cfg);
+
+    /* 生成幅值为 2.0 的常量信号 */
+    generate_constant_signal(test_signal, 128, 2.0f);
+
+    int ret = dsp_compute_rms(test_signal, 128, &rms);
+    TEST_ASSERT_EQUAL_INT(APP_ERR_OK, ret);
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 2.0f, rms.value);
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 2.0f, rms.mean);
+    TEST_ASSERT_FLOAT_NEAR(0.0f, rms.std_dev, 0.01f);
+
+    dsp_deinit();
+}
+
+/**
+ * test_rms_sine_wave - 正弦波 RMS 应为 A/√2
+ */
+void test_rms_sine_wave(void)
+{
+    struct rms_result rms;
+
+    dsp_init(&default_cfg);
+
+    /* 生成幅度 1.0, 频率 50Hz 的正弦波, 采样率 400Hz */
+    generate_sine_wave(test_signal, 128, 1.0f, 50.0f, 400);
+
+    int ret = dsp_compute_rms(test_signal, 128, &rms);
+    TEST_ASSERT_EQUAL_INT(APP_ERR_OK, ret);
+    /* 理论 RMS = A/√2 ≈ 0.7071 */
+    TEST_ASSERT_FLOAT_WITHIN(0.05f, 0.7071f, rms.value);
+
+    dsp_deinit();
+}
+
+/**
+ * test_rms_zero_signal - 全零信号 RMS 应为 0
+ */
+void test_rms_zero_signal(void)
+{
+    struct rms_result rms;
+
+    dsp_init(&default_cfg);
+    memset(test_signal, 0, sizeof(test_signal));
+
+    int ret = dsp_compute_rms(test_signal, 128, &rms);
+    TEST_ASSERT_EQUAL_INT(APP_ERR_OK, ret);
+    TEST_ASSERT_FLOAT_WITHIN(0.001f, 0.0f, rms.value);
+    TEST_ASSERT_FLOAT_WITHIN(0.001f, 0.0f, rms.mean);
+
+    dsp_deinit();
+}
+
+/**
+ * test_rms_crest_factor - 波峰因子计算验证
+ */
+void test_rms_crest_factor(void)
+{
+    struct rms_result rms;
+
+    dsp_init(&default_cfg);
+
+    /* 正弦波的波峰因子应为 √2 ≈ 1.414 */
+    generate_sine_wave(test_signal, 128, 1.0f, 50.0f, 400);
+
+    int ret = dsp_compute_rms(test_signal, 128, &rms);
+    TEST_ASSERT_EQUAL_INT(APP_ERR_OK, ret);
+    TEST_ASSERT_FLOAT_WITHIN(0.15f, 1.414f, rms.crest_factor);
+
+    dsp_deinit();
+}
+
+/* ==================== 测试组：FFT 参数配置测试 ==================== */
+
+/**
+ * test_fft_size_validation - FFT 大小必须为 2 的幂
+ */
+void test_fft_size_validation(void)
+{
+    struct dsp_config cfg_invalid = {
+        .default_fft_size = 100,  /* 不是 2 的幂 */
+        .window_type = DSP_WINDOW_HANN,
+        .enable_dc_removal = true
+    };
+
+    int ret = dsp_init(&cfg_invalid);
+    TEST_ASSERT_EQUAL_INT(APP_ERR_DSP_INVALID_CONFIG, ret);
+
+    if (ret == APP_ERR_OK) dsp_deinit();
+}
+
+/**
+ * test_fft_size_too_large - FFT 大小超过最大限制
+ */
+void test_fft_size_too_large(void)
+{
+    struct dsp_config cfg_large = {
+        .default_fft_size = 4096,  /* 超过 DSP_FFT_MAX_SIZE */
+        .window_type = DSP_WINDOW_HANN,
+        .enable_dc_removal = true
+    };
+
+    int ret = dsp_init(&cfg_large);
+    TEST_ASSERT_EQUAL_INT(APP_ERR_DSP_INVALID_CONFIG, ret);
+
+    if (ret == APP_ERR_OK) dsp_deinit();
+}
+
+/**
+ * test_window_type_setter - 窗函数类型设置
+ */
+void test_window_type_setter(void)
+{
+    dsp_init(&default_cfg);
+
+    /* 设置有效窗函数类型 */
+    for (int i = 0; i <= 4; i++) {
+        int ret = dsp_set_window_type((enum dsp_window_type)i);
+        TEST_ASSERT_EQUAL_INT(APP_ERR_OK, ret);
+    }
+
+    /* 设置无效类型应失败 */
+    int ret = dsp_set_window_type((enum dsp_window_type)99);
+    TEST_ASSERT_EQUAL_INT(APP_ERR_INVALID_PARAM, ret);
+
+    dsp_deinit();
+}
+
+/* ==================== 测试组：统计信息测试 ==================== */
+
+/**
+ * test_stats_initialization - 统计信息初始状态
+ */
+void test_stats_initialization(void)
+{
+    struct dsp_stats stats;
+
+    dsp_init(&default_cfg);
+
+    int ret = dsp_get_stats(&stats);
+    TEST_ASSERT_EQUAL_INT(APP_ERR_OK, ret);
+    TEST_ASSERT_EQUAL_UINT32(0, stats.total_computations);
+    TEST_ASSERT_EQUAL_UINT32(0, stats.rms_computations);
+    TEST_ASSERT_EQUAL_UINT32(0, stats.fft_computations);
+    TEST_ASSERT_EQUAL_UINT32(0, stats.error_count);
+
+    dsp_deinit();
+}
+
+/**
+ * test_stats_reset - 重置统计计数器
+ */
+void test_stats_reset(void)
+{
+    struct dsp_stats stats;
+
+    dsp_init(&default_cfg);
+    dsp_reset_stats();
+
+    int ret = dsp_get_stats(&stats);
+    TEST_ASSERT_EQUAL_INT(APP_ERR_OK, ret);
+    TEST_ASSERT_EQUAL_UINT32(0, stats.total_computations);
+
+    dsp_deinit();
+}
+
+/**
+ * test_stats_null_param - NULL 参数处理
+ */
+void test_stats_null_param(void)
+{
+    dsp_init(&default_cfg);
+    TEST_ASSERT_EQUAL_INT(APP_ERR_INVALID_PARAM, dsp_get_stats(NULL));
+    dsp_deinit();
+}
+
+/* ==================== Unity 主函数 ==================== */
+
+void setUp(void) { }
+void tearDown(void) {
+    if (dsp_is_initialized()) {
+        dsp_deinit();
+    }
+}
+
+int main(void)
+{
+    UNITY_BEGIN();
+
+    RUN_TEST(test_constants);
+    RUN_TEST(test_window_type_enum);
+    RUN_TEST(test_struct_sizes);
+    RUN_TEST(test_init_uninitialized_state);
+    RUN_TEST(test_null_param_handling);
+    RUN_TEST(test_init_success);
+    RUN_TEST(test_init_default_config);
+    RUN_TEST(test_rms_constant_signal);
+    RUN_TEST(test_rms_sine_wave);
+    RUN_TEST(test_rms_zero_signal);
+    RUN_TEST(test_rms_crest_factor);
+    RUN_TEST(test_fft_size_validation);
+    RUN_TEST(test_fft_size_too_large);
+    RUN_TEST(test_window_type_setter);
+    RUN_TEST(test_stats_initialization);
+    RUN_TEST(test_stats_reset);
+    RUN_TEST(test_stats_null_param);
+
+    return UNITY_END();
+}

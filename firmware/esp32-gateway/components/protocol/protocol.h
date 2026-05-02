@@ -33,7 +33,7 @@
 #define PROTO_MAX_FRAME_LEN       (PROTO_FRAME_OVERHEAD + PROTO_MAX_DATA_LEN)  /**< 最大帧长度 */
 #define PROTO_RX_BUF_SIZE         1024     /**< UART 接收缓冲区 */
 #define PROTO_TX_BUF_SIZE         1024     /**< UART 发送缓冲区 */
-#define PROTO_TASK_STACK_SIZE     4096     /**< 接收任务栈大小 */
+#define PROTO_TASK_STACK_SIZE     6144     /**< 接收任务栈大小 (增大以容纳协议解析和错误处理) */
 #define PROTO_TASK_PRIORITY       5        /**< 接收任务优先级 */
 #define PROTO_ACK_TIMEOUT_MS      500      /**< ACK 超时时间 (ms) */
 #define PROTO_MAX_RETRIES         3        /**< 最大重试次数 */
@@ -47,12 +47,15 @@
 #define CMD_ADC_DATA              0x01     /**< ADC 传感器数据 */
 #define CMD_ENCODER_DATA          0x02     /**< 编码器转速数据 */
 #define CMD_STATUS_REPORT         0x03     /**< 设备状态上报 */
+#define CMD_TEMP_HUMIDITY_DATA    0x04     /**< 温湿度传感器数据 (新增) */
+#define CMD_TIME_SYNC_RESP        0x05     /**< 时间同步响应 (STM32→ESP32) */
 
 /* ESP32 → STM32 (控制端发送) */
 #define CMD_AI_RESULT             0x10     /**< AI 分析结果 */
 #define CMD_CONTROL               0x11     /**< 控制命令下发 */
 #define CMD_CONFIG_SET            0x12     /**< 参数配置下发 */
 #define CMD_CONFIG_GET            0x13     /**< 参数配置查询 */
+#define CMD_TIME_SYNC_REQ         0x14     /**< 时间同步请求 (ESP32→STM32, 新增) */
 
 /* 系统命令 */
 #define CMD_ACK                   0xF0     /**< ACK 确认帧 */
@@ -75,12 +78,59 @@ struct proto_packet {
 
 /**
  * struct adc_data - ADC 传感器数据包 (STM32→ESP32)
+ * 注意: 此结构的 temperature 字段为预留，实际温湿度请使用 temp_humidity_data
  */
 struct adc_data {
     float vib_x;                   /**< X轴振动加速度 */
     float vib_y;                   /**< Y轴振动加速度 */
     float vib_z;                   /**< Z轴振动加速度 */
-    float temperature;             /**< 温度 (°C) */
+    float temperature;             /**< 温度 (°C) [预留, 建议使用 CMD_TEMP_HUMIDITY_DATA] */
+};
+
+/**
+ * enum temp_sensor_type - 温湿度传感器类型枚举
+ */
+enum temp_sensor_type {
+    TEMP_SENSOR_DHT22 = 0,        /**< DHT22 温湿度传感器 */
+    TEMP_SENSOR_SHT30 = 1,        /**< SHT30 高精度温湿度传感器 */
+    TEMP_SENSOR_SHT31 = 2,        /**< SHT31 温湿度传感器 */
+    TEMP_SENSOR_DS18B20 = 3,      /**< DS18B20 数字温度传感器 */
+    TEMP_SENSOR_LM75 = 4,         /**< LM75 I2C 温度传感器 */
+    TEMP_SENSOR_CUSTOM = 0xFF     /**< 自定义/未知传感器 */
+};
+
+/**
+ * struct temp_humidity_data - 温湿度传感器数据包 (STM32→ESP32)
+ *
+ * 用途:
+ *   - 工业振动监测中的温度漂移补偿
+ *   - 环境温湿度监控
+ *   - ADXL345 加速度计的温度校正
+ *
+ * 时间戳说明:
+ *   - timestamp_stm32_ms: STM32 本地时间 (毫秒)
+ *   - timestamp_esp32_us: ESP32 收到数据时的本地时间 (微秒)
+ *   - 两者的差值用于时间同步和对齐
+ */
+struct temp_humidity_data {
+    float temperature_c;           /**< 温度 (°C), 范围: -40~+125°C */
+    float humidity_rh;             /**< 相对湿度 (%RH), 范围: 0~100% */
+    uint32_t timestamp_stm32_ms;   /**< STM32 采集时间戳 (毫秒) */
+    uint32_t timestamp_esp32_us;   /**< ESP32 接收时间戳 (微秒, 由 Protocol 层填充) */
+    enum temp_sensor_type sensor_type; /**< 传感器类型 */
+    uint8_t sensor_status;         /**< 传感器状态: 0=正常, 1=读取失败, 2=校验错误 */
+    int16_t raw_adc_value;         /**< 原始 ADC 值 (用于调试/校准) */
+};
+
+/**
+ * struct time_sync_info - 时间同步信息 (用于温度补偿模块)
+ */
+struct time_sync_info {
+    int64_t stm32_epoch_offset_us;  /**< STM32 与 ESP32 的 epoch 偏移量 (微秒) */
+    uint32_t last_sync_time_us;    /**< 上次成功同步时间 (ESP32 本地时间, 微秒) */
+    uint32_t sync_interval_ms;     /**< 同步间隔 (毫秒) */
+    bool is_synchronized;          /**< 是否已同步 */
+    uint8_t consecutive_failures;  /**< 连续同步失败次数 */
 };
 
 /**
@@ -170,6 +220,32 @@ typedef void (*proto_callback_t)(uint8_t cmd, const uint8_t *data,
  * @context: 附加上下文信息
  */
 typedef void (*proto_error_callback_t)(int error_code, const char *context);
+
+/**
+ * temp_data_callback_t - 温湿度数据到达回调函数类型
+ * @data: 解析后的温湿度数据结构体指针
+ * @user_data: 用户上下文指针 (注册时传入)
+ *
+ * 用途:
+ *   - temperature_compensation 模块注册此回调接收温度数据
+ *   - sensor_service 业务层可同时注册用于日志/监控
+ *
+ * 注意:
+ *   - 此回调在 Protocol 的 RX 任务中调用，不应阻塞
+ *   - data 指针的生命周期仅限于本次回调，如需保存请拷贝
+ */
+typedef void (*temp_data_callback_t)(const struct temp_humidity_data *data,
+                                     void *user_data);
+
+/**
+ * proto_time_sync_callback_t - 时间同步完成回调函数类型 (Protocol 模块专用)
+ * @sync_info: 同步结果信息
+ * @user_data: 用户上下文指针
+ *
+ * 注意: 此类型名带 proto_ 前缀以避免与 time_sync.h 中的 time_sync_callback_t 冲突
+ */
+typedef void (*proto_time_sync_callback_t)(const struct time_sync_info *sync_info,
+                                           void *user_data);
 
 /* ==================== 生命周期 API ==================== */
 
@@ -316,6 +392,90 @@ void protocol_set_dev_id(uint8_t dev_id);
  */
 bool protocol_is_peer_alive(void);
 
+/* ==================== 温湿度传感器 API (新增) ==================== */
+
+/**
+ * protocol_register_temp_callback - 注册温湿度数据接收回调
+ * @cb: 回调函数指针
+ * @user_data: 用户上下文 (传递给回调)
+ *
+ * 当收到 CMD_TEMP_HUMIDITY_DATA 帧时自动调用此回调。
+ * 可同时注册多个回调（如 temperature_compensation + sensor_service）。
+ *
+ * Return: APP_ERR_OK or error code
+ */
+int protocol_register_temp_callback(temp_data_callback_t cb, void *user_data);
+
+/**
+ * protocol_unregister_temp_callback - 注销温湿度数据接收回调
+ * @cb: 待注销的回调函数指针
+ *
+ * Return: APP_ERR_OK or error code
+ */
+int protocol_unregister_temp_callback(temp_data_callback_t cb);
+
+/**
+ * protocol_request_temp_data - 向 STM32 请求最新的温湿度数据
+ *
+ * 发送 CMD_CONFIG_GET 命令，STM32 应立即响应最新采集的数据。
+ *
+ * Return: APP_ERR_OK or error code
+ */
+int protocol_request_temp_data(void);
+
+/**
+ * protocol_get_latest_temp - 获取最近一次收到的温湿度数据
+ * @out: 输出数据结构体指针
+ *
+ * 用于同步查询模式（非回调模式）。
+ *
+ * Return: APP_ERR_OK 成功, APP_ERR_PROTO_NO_DATA 暂无数据, 其他错误码
+ */
+int protocol_get_latest_temp(struct temp_humidity_data *out);
+
+/* ==================== 时间同步 API (新增) ==================== */
+
+/**
+ * protocol_register_time_sync_callback - 注册时间同步完成回调
+ * @cb: 回调函数指针
+ * @user_data: 用户上下文
+ *
+ * Return: APP_ERR_OK or error code
+ */
+int protocol_register_time_sync_callback(proto_time_sync_callback_t cb,
+                                          void *user_data);
+
+/**
+ * protocol_initiate_time_sync - 发起一次时间同步
+ *
+ * ESP32 → STM32: 发送当前时间戳 + 请求响应
+ * STM32 → ESP32: 返回其本地时间戳
+ * Protocol 层计算偏移量并更新 time_sync_info
+ *
+ * Return: APP_ERR_OK or error code
+ */
+int protocol_initiate_time_sync(void);
+
+/**
+ * protocol_get_time_sync_info - 获取当前时间同步状态
+ * @info: 输出时间同步信息结构体
+ *
+ * Return: APP_ERR_OK or error code
+ */
+int protocol_get_time_sync_info(struct time_sync_info *info);
+
+/**
+ * protocol_convert_stm32_to_esp32_time - 将 STM32 时间戳转换为 ESP32 本地时间
+ * @stm32_timestamp_ms: STM32 时间戳 (毫秒)
+ * @esp32_timestamp_us: 输出 ESP32 时间戳 (微秒)
+ *
+ * 用于 temperature_compensation 模块进行时间对齐。
+ *
+ * Return: APP_ERR_OK or error code
+ */
+int protocol_convert_stm32_to_esp32_time(uint32_t stm32_timestamp_ms,
+                                          int64_t *esp32_timestamp_us);
+
 /* ==================== 调试 API ==================== */
 
 /**
@@ -331,5 +491,19 @@ void protocol_dump_frame(const uint8_t *frame, uint16_t len,
  * protocol_dump_stats - 打印统计信息到日志
  */
 void protocol_dump_stats(void);
+
+/**
+ * proto_get_last_temp_humidity - 获取最新温湿度数据 (从STM32接收)
+ *
+ * @temp_c: 输出温度 (°C), 如果无数据则为0.0f
+ * @humidity_rh: 输出湿度 (%RH), 如果无数据则为0.0f
+ *
+ * Return: APP_ERR_OK 如果有有效数据, APP_ERR_PROTO_NO_DATA 如果暂无数据
+ *
+ * 用途:
+ *   - 降级模式下, sensor_service可用此函数获取温湿度数据上传MQTT
+ *   - 即使ADXL345不可用, 也能确保温湿度数据流不断
+ */
+int proto_get_last_temp_humidity(float *temp_c, float *humidity_rh);
 
 #endif /* PROTOCOL_H_ */

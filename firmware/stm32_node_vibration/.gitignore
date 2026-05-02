@@ -1,0 +1,84 @@
+# 编译输出
+Build/
+build/
+Output/
+output/
+*.o
+*.d
+*.axf
+*.elf
+*.hex
+*.bin
+*.map
+*.lst
+*.exe
+
+# 官方库 & 第三方中间件
+Drivers
+Middlewares/
+Utilities/
+USB_HOST/
+USB_DEVICE/
+SEGGER/
+FatFS/
+LWIP/
+FreeRTOS/
+CMSIS/
+DSP/
+LVGL/
+# KEIL MDK
+*.uvoptx
+*.uvprojx
+*.uvguix
+*.dbgconf
+JLinkLog.txt
+JLinkSettings.ini
+RTE/
+Listings/
+
+# STM32CubeIDE
+.mxproject
+.cproject
+.project
+.settings/
+Debug/
+Release/
+STM32F407IGTX_FLASH.ld
+STM32F407IGTX_RAM.ld
+
+# CMake/ Ninja
+CMakeLists.txt.user
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+compile_commands.json
+.ninja_deps
+.ninja_log
+build.ninja
+
+# VSCode
+.vscode/
+*.code-workspace
+.idea/
+
+# 日志、临时文件
+*.log
+*.tmp
+*.bak
+*.swp
+*.orig
+
+# 系统文件
+*.DS_Store
+Thumbs.db
+
+# 测试、覆盖率
+*.gcno
+*.gcda
+*.info
+
+# 加密/密钥
+*.key
+*.pem
+secrets.h
+

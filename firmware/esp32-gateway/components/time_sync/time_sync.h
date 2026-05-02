@@ -31,10 +31,10 @@
 #define TIME_SYNC_DEFAULT_RETRY_MS    5000    /**< 默认重试间隔 (ms) */
 #define TIME_SYNC_DEFAULT_MAX_RETRIES 3       /**< 默认最大重试次数 */
 #define TIME_SYNC_DEFAULT_INTERVAL_S 3600    /**< 默认自动同步间隔 (秒)*/
-#define TIME_SYNC_TASK_STACK_SIZE     2048    /**< 同步任务栈大小（字节）*/
+#define TIME_SYNC_TASK_STACK_SIZE     6144    /**< 同步任务栈大小（字节）- 增大到6KB防止SNTP网络回调栈溢出 */
 #define TIME_SYNC_TASK_PRIORITY      5       /**< 同步任务优先级 */
 #define TIME_SYNC_MAX_CALLBACKS       4       /**< 最大回调注册数 */
-#define TIME_SYNC_MONITOR_STACK_SIZE 2048    /**< SNTP 监控任务栈大小（字节）*/
+#define TIME_SYNC_MONITOR_STACK_SIZE  4096   /**< SNTP 监控任务栈大小（字节）- 增大到4KB */
 
 /* ==================== 同步状态枚举 ==================== */
 

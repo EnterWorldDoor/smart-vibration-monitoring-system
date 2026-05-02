@@ -1,0 +1,13 @@
+# Name,   Type, SubType, Offset,  Size, Flags
+# Note: If you have increased the bootloader size, make sure to update the offsets to avoid overlap.
+
+# 分区表定义 - ESP32-S3 4MB Flash
+#
+# 分区说明:
+#   nvs:      非易失性存储,保存WiFi配置和MQTT参数
+#   phy_init: RF PHY初始化数据 (必须从0xf000开始)
+#   factory:  主应用程序固件
+
+nvs,      data, nvs,     0x9000,  0x6000,
+phy_init, data, phy,    0xf000,  0x1000,
+factory,  app,  factory, 0x10000, 0x3F0000,
