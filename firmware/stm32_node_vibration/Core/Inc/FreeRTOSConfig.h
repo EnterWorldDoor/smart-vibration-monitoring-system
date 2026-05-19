@@ -56,7 +56,7 @@
 #define CMSIS_device_header "stm32f4xx.h"
 #endif /* CMSIS_device_header */
 
-#define configENABLE_FPU                         0
+#define configENABLE_FPU                         1
 #define configENABLE_MPU                         0
 
 #define configUSE_PREEMPTION                     1
@@ -68,7 +68,7 @@
 #define configTICK_RATE_HZ                       ((TickType_t)1000)
 #define configMAX_PRIORITIES                     ( 56 )
 #define configMINIMAL_STACK_SIZE                 ((uint16_t)128)
-#define configTOTAL_HEAP_SIZE                    ((size_t)65536)
+#define configTOTAL_HEAP_SIZE                    ((size_t)40960)
 #define configMAX_TASK_NAME_LEN                  ( 16 )
 #define configUSE_TRACE_FACILITY                 1
 #define configUSE_16_BIT_TICKS                   0
@@ -188,6 +188,20 @@ standard names. */
  *   - Method 2: 检测栈指针+检查字节模式是否被破坏 (推荐!)
  */
 #define configCHECK_FOR_STACK_OVERFLOW 2
+
+/*
+ * ⚠️ 【关键修复】强制启用FPU上下文保存!
+ *
+ * CubeMX默认生成 configENABLE_FPU=0, 但编译器使用 -mfloat-abi=hard
+ * + -mfpu=fpv4-sp-d16, 浮点参数通过FPU寄存器传递.
+ *
+ * configENABLE_FPU=0 导致FreeRTOS不保存/恢复FPU寄存器(S0-S31,FPSCR),
+ * 任务切换时FPU状态被其他任务污染 → 浮点运算结果错误 → HardFault/LCD花屏.
+ *
+ * 使用 #undef + #define 确保即使CubeMX重新生成代码(fpu=0),此修复也不丢失.
+ */
+#undef  configENABLE_FPU
+#define configENABLE_FPU  1
 
 /* USER CODE END Defines */
 
