@@ -101,6 +101,13 @@ struct analysis_result {
     uint32_t samples_analyzed;         /**< 本次分析的样本数 */
     uint32_t total_analyses;           /**< 累计分析次数 */
 
+    /* ---- AI 分类结果 ---- */
+    int ai_class_id;               /**< AI分类ID (0=normal, 1=imbalance, 2=misalignment, 3=bearing_fault, 255=unclassified) */
+    float ai_confidence;           /**< 置信度 0.0-1.0 */
+    char ai_class_name[32];        /**< 分类名称 */
+    char ai_cascade_source[24];    /**< 级联来源: "primary_cnn", "fallback_rule", "fallback_coldstart" */
+    uint32_t ai_inference_time_us; /**< 推理耗时 (微秒) */
+
     /* ---- 健康指标 ---- */
     struct adxl345_health_info adxl_health; /**< ADXL345 健康状态 */
     struct proto_stats protocol_stats;      /**< 协议统计 */

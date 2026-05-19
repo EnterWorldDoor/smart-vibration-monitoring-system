@@ -476,6 +476,60 @@ int protocol_get_time_sync_info(struct time_sync_info *info);
 int protocol_convert_stm32_to_esp32_time(uint32_t stm32_timestamp_ms,
                                           int64_t *esp32_timestamp_us);
 
+/* ==================== 电机控制协议 API ==================== */
+
+/* 电机控制命令字 (STM32 ↔ ESP32) */
+#define CMD_MOTOR_STATUS_RESP      0x06   /**< STM32→ESP32 电机状态上报 */
+#define CMD_MOTOR_CONTROL          0x15   /**< ESP32→STM32 电机控制命令 */
+#define CMD_MOTOR_QUERY            0x16   /**< ESP32→STM32 电机状态查询 */
+
+/* 电机控制子命令 (CMD_MOTOR_CONTROL payload[0]) */
+#define MOTOR_SUBCMD_STOP          0x00
+#define MOTOR_SUBCMD_START         0x01
+#define MOTOR_SUBCMD_SET_DUTY      0x02
+#define MOTOR_SUBCMD_SET_SPEED     0x03
+#define MOTOR_SUBCMD_SET_DIRECTION 0x04
+#define MOTOR_SUBCMD_PID_ENABLE    0x05
+#define MOTOR_SUBCMD_EMERGENCY_STOP 0x06
+#define MOTOR_SUBCMD_CLEAR_FAULT   0x07
+
+/* 电机状态数据结构 (STM32→ESP32, 26字节payload) */
+struct motor_status {
+	int32_t rpm;            /* 当前转速 */
+	int32_t current_ma;     /* 电流 (mA) */
+	int32_t bus_mv;         /* 母线电压 (mV) */
+	int32_t temp_dc;        /* 温度 (0.1°C) */
+	uint8_t state;          /* 电机状态 (enum motor_state) */
+	uint8_t fault;          /* 故障码 (0=正常) */
+	int32_t duty;           /* PWM占空比 */
+	int8_t  direction;      /* 1=CW, -1=CCW */
+	bool    pid_active;     /* PID是否激活 */
+};
+
+/**
+ * protocol_send_motor_control - 发送电机控制命令至STM32
+ * @subcmd: 子命令 (MOTOR_SUBCMD_*)
+ * @value:  参数值 (占空比/RPM/方向)
+ * Return: APP_ERR_OK or error code
+ */
+int protocol_send_motor_control(uint8_t subcmd, int32_t value);
+
+/**
+ * protocol_parse_motor_status - 解析电机状态上报帧
+ * @data:     payload数据
+ * @len:      payload长度
+ * @status:   输出状态结构体
+ * Return: APP_ERR_OK or error code
+ */
+int protocol_parse_motor_status(const uint8_t *data, uint16_t len,
+				struct motor_status *status);
+
+/**
+ * protocol_send_motor_query - 查询STM32电机状态
+ * Return: APP_ERR_OK or error code
+ */
+int protocol_send_motor_query(void);
+
 /* ==================== 调试 API ==================== */
 
 /**

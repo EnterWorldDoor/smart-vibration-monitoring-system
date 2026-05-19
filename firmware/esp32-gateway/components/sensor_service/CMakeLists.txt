@@ -3,5 +3,5 @@ idf_component_register(
     SRCS "sensor_service.c"
     INCLUDE_DIRS "."
     REQUIRES adxl345 dsp protocol temperature_compensation
-            common freertos log_system esp_timer
+            ai_service data_manager common freertos log_system esp_timer
 )

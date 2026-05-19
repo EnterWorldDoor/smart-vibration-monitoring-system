@@ -18,6 +18,6 @@
 idf_component_register(
     SRCS "esp32-gateway.c"
     INCLUDE_DIRS "."
-    REQUIRES esp_wifi nvs_flash adxl345 sensor_service time_sync log_system mqtt_app freertos esp_netif esp_event
+    REQUIRES esp_wifi nvs_flash adxl345 sensor_service ai_service data_manager time_sync log_system mqtt_app freertos esp_netif esp_event
     # PRIV_REQUIRES unity  ← 🔴 已移除! 禁止编译所有*_test.c文件,避免app_main()冲突
 )
