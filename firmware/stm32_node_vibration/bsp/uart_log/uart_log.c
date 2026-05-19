@@ -108,36 +108,62 @@ static void ring_buf_advance(uint16_t len)
 static int start_tx_if_idle(void)
 {
         HAL_StatusTypeDef status;
+        uint8_t send_buf[256];  /* 本地发送缓冲区, 避免ringbuf被并发覆盖 */
         uint8_t *data;
         uint16_t len;
+        int total_sent = 0;
 
-        if (g_uart_log.tx_busy || g_uart_log.count == 0)
-                return -1;
+        /*
+         * 原子检查并设置tx_busy标志, 防止两个任务
+         * 同时进入UART发送循环导致输出交叉乱码。
+         */
+        if (xSemaphoreTake(g_uart_log.mutex, pdMS_TO_TICKS(10)) != pdTRUE)
+                return -2;
 
-        len = ring_buf_read_contiguous(&data, g_uart_log.count);
-        if (len == 0)
+        if (g_uart_log.tx_busy || g_uart_log.count == 0) {
+                xSemaphoreGive(g_uart_log.mutex);
                 return -1;
+        }
 
         g_uart_log.tx_busy = true;
 
-        status = HAL_UART_Transmit(g_uart_log.huart, data,
-                                    len, UART_LOG_DEFAULT_TIMEOUT_MS);
+        while (1) {
+                len = ring_buf_read_contiguous(&data, g_uart_log.count);
+                if (len == 0)
+                        break;
 
-        if (status != HAL_OK) {
-                g_uart_log.tx_busy = false;
-                g_uart_log.stats.tx_errors++;
-                return -2;
+                /* 复制到本地缓冲区后释放mutex, 发送期间ringbuf可被写入 */
+                if (len > sizeof(send_buf))
+                        len = sizeof(send_buf);
+                memcpy(send_buf, data, len);
+                ring_buf_advance(len);
+                g_uart_log.stats.total_bytes += len;
+                total_sent += len;
+
+                xSemaphoreGive(g_uart_log.mutex);
+
+                status = HAL_UART_Transmit(g_uart_log.huart, send_buf,
+                                            len, UART_LOG_DEFAULT_TIMEOUT_MS);
+
+                if (status != HAL_OK) {
+                        g_uart_log.stats.tx_errors++;
+                        g_uart_log.tx_busy = false;
+                        return -2;
+                }
+
+                if (xSemaphoreTake(g_uart_log.mutex, pdMS_TO_TICKS(10)) != pdTRUE) {
+                        g_uart_log.tx_busy = false;
+                        return -2;
+                }
         }
 
-        ring_buf_advance(len);
-
-        g_uart_log.stats.total_bytes += len;
         g_uart_log.stats.total_lines++;
         g_uart_log.stats.last_tx_time_ms = HAL_GetTick();
 
         g_uart_log.tx_busy = false;
+        xSemaphoreGive(g_uart_log.mutex);
 
-        return 0;
+        return total_sent;
 }
 
 /* ==================== 生命周期实现 ==================== */
@@ -180,31 +206,33 @@ void uart_log_deinit(void)
 
 void uart_log_write(const char *data, uint16_t len)
 {
-        uint16_t written;
-
         if (!g_uart_log.initialized || !g_uart_log.enabled)
                 return;
 
         if (!data || len == 0)
                 return;
 
-        /* 使用 FreeRTOS 原生 API 获取互斥量（10ms 超时） */
-        if (xSemaphoreTake(g_uart_log.mutex, pdMS_TO_TICKS(10)) != pdTRUE) {
+        /*
+         * 简化方案: mutex保护下直接阻塞发送。
+         * 每次发送耗时~5ms@115200/70字节, 可接受。
+         * 环形缓冲区方案在并发下存在数据竞争导致消息截断,
+         * 直接发送是最可靠的实现。
+         */
+        if (xSemaphoreTake(g_uart_log.mutex, pdMS_TO_TICKS(100)) != pdTRUE) {
                 g_uart_log.stats.drop_bytes += len;
                 g_uart_log.stats.drop_lines++;
                 return;
         }
 
-        written = ring_buf_write((const uint8_t *)data, len);
-
-        if (written < len) {
-                g_uart_log.stats.drop_bytes += (len - written);
-                g_uart_log.stats.drop_lines++;
+        if (HAL_UART_Transmit(g_uart_log.huart, (uint8_t *)data,
+                              len, 100) != HAL_OK) {
+                g_uart_log.stats.tx_errors++;
+        } else {
+                g_uart_log.stats.total_bytes += len;
+                g_uart_log.stats.total_lines++;
         }
 
         xSemaphoreGive(g_uart_log.mutex);
-
-        start_tx_if_idle();
 }
 
 /* ==================== 配置实现 ==================== */

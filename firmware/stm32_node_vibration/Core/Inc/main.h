@@ -60,6 +60,21 @@ void Error_Handler(void);
 
 /* USER CODE BEGIN Private defines */
 
+/*
+ * USE_GUI - Enable LVGL Graphics User Interface
+ *
+ * Uncomment to enable the 5-card tablet-style GUI with anime character.
+ * Controls:
+ *   - LVGL GUI task creation (lvgl_gui, 8KB stack, Normal priority)
+ *   - gui_app_update_sensor_data() calls from app_main.c
+ *   - Full LCD rendering pipeline (lv_timer_handler → lcd_flush_cb)
+ *
+ * Disable if:
+ *   - Need to save ~20KB Flash + ~10KB SRAM
+ *   - Running headless (no LCD module connected)
+ */
+#define USE_GUI
+
 /* USER CODE END Private defines */
 
 #ifdef __cplusplus

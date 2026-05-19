@@ -84,6 +84,30 @@
 #define ERR_DHT11_BUS_BUSY              -411
 
 /*
+ * NTC 热敏电阻传感器错误 (-420 ~ -439)
+ * NTC ADC采集与温度转换专用错误码
+ */
+#define ERR_NTC_INIT_FAIL               -420
+#define ERR_NTC_NOT_INIT                -421
+#define ERR_NTC_INVALID_PARAM           -422
+#define ERR_NTC_TIMEOUT                 -423
+#define ERR_NTC_ADC_ERROR               -424
+#define ERR_NTC_OUT_OF_RANGE            -425
+
+/*
+ * DS18B20 数字温度传感器错误 (-440 ~ -459)
+ * DS18B20 1-Wire通信专用错误码
+ */
+#define ERR_DS18B20_INIT_FAIL           -440
+#define ERR_DS18B20_NOT_INIT            -441
+#define ERR_DS18B20_INVALID_PARAM       -442
+#define ERR_DS18B20_TIMEOUT             -443
+#define ERR_DS18B20_NO_RESPONSE         -444
+#define ERR_DS18B20_CRC_ERROR           -445
+#define ERR_DS18B20_BUS_STUCK           -446
+#define ERR_DS18B20_READ_FAIL           -447
+
+/*
  * 电机控制错误 (-500 ~ -599)
  * PWM/电机驱动相关错误
  */
@@ -132,6 +156,87 @@
 #define ERR_PROTO_BATCH_OVERFLOW        -908
 #define ERR_PROTO_CALLBACK_FULL         -909
 
+/*
+ * LCD 显示错误 (-1000 ~ -1099)
+ * FSMC/LVGL/ILI9341 显示相关错误
+ */
+#define ERR_LCD_INIT_FAIL               -1000
+#define ERR_LCD_NOT_INIT                -1001
+#define ERR_LCD_INVALID_PARAM           -1002
+#define ERR_LCD_BUS_BUSY                -1003
+#define ERR_LCD_FLUSH_FAIL              -1004
+#define ERR_LCD_BACKLIGHT_FAIL          -1005
+
+/*
+ * GUI 界面错误 (-1100 ~ -1199)
+ * LVGL UI 应用层错误
+ */
+#define ERR_GUI_INIT_FAIL               -1100
+#define ERR_GUI_CREATE_SCREEN_FAIL      -1101
+#define ERR_GUI_INVALID_MODULE          -1102
+#define ERR_GUI_RESOURCE_FAIL           -1103
+
+/*
+ * EEPROM 存储错误 (-1200 ~ -1299)
+ * AT24Cxx 等 I2C EEPROM 错误
+ */
+#define ERR_EEPROM_INIT_FAIL            -1200
+#define ERR_EEPROM_NOT_INIT             -1201
+#define ERR_EEPROM_WRITE_FAIL           -1202
+#define ERR_EEPROM_READ_FAIL            -1203
+#define ERR_EEPROM_INVALID_ADDR         -1204
+#define ERR_EEPROM_BUS_BUSY             -1205
+
+/*
+ * Flash 存储错误 (-1300 ~ -1399)
+ * STM32 内部 Flash 操作错误
+ */
+#define ERR_FLASH_INIT_FAIL             -1300
+#define ERR_FLASH_ERASE_FAIL            -1301
+#define ERR_FLASH_WRITE_FAIL            -1302
+#define ERR_FLASH_READ_FAIL             -1303
+#define ERR_FLASH_INVALID_ADDR          -1304
+#define ERR_FLASH_LOCKED                -1305
+
+/*
+ * 数据验证错误 (-1400 ~ -1499)
+ * 传感器数据合理性校验错误
+ */
+#define ERR_DATA_OUT_OF_RANGE           -1400
+#define ERR_DATA_STALE                  -1401
+#define ERR_DATA_CHECKSUM_FAIL          -1402
+#define ERR_DATA_NOISE_THRESHOLD        -1403
+#define ERR_DATA_INVALID_FORMAT         -1404
+
+/*
+ * 振动分析错误 (-1500 ~ -1599)
+ * FFT/频谱分析相关错误
+ */
+#define ERR_VIB_INIT_FAIL               -1500
+#define ERR_VIB_NOT_INIT                -1501
+#define ERR_VIB_BUFFER_OVERFLOW         -1502
+#define ERR_VIB_INVALID_FREQ            -1503
+#define ERR_VIB_FFT_FAIL                -1504
+#define ERR_VIB_NO_DATA                 -1505
+
+/*
+ * 模拟传感器错误 (-1600 ~ -1699)
+ * 软件模拟传感器错误
+ */
+#define ERR_SIM_INIT_FAIL               -1600
+#define ERR_SIM_NOT_INIT                -1601
+#define ERR_SIM_DATA_BOUNDARY           -1602
+#define ERR_SIM_INVALID_PARAM           -1603
+
+/*
+ * 系统配置错误 (-1700 ~ -1799)
+ * 系统级配置和初始化错误
+ */
+#define ERR_SYS_CLOCK_CONFIG_FAIL       -1700
+#define ERR_SYS_PERIPH_INIT_FAIL        -1701
+#define ERR_SYS_WATCHDOG_FAIL           -1702
+#define ERR_SYS_BROWNOUT_DETECTED       -1703
+
 /* ==================== 错误状态管理 ==================== */
 
 /**
@@ -178,7 +283,16 @@ struct error_manager {
 #define MODULE_ID_FS                    7
 #define MODULE_ID_RTOS                  8
 #define MODULE_ID_APP                   9
-#define MODULE_ID_MAX                   10
+#define MODULE_ID_LCD                   10
+#define MODULE_ID_GUI                   11
+#define MODULE_ID_EEPROM                12
+#define MODULE_ID_FLASH                 13
+#define MODULE_ID_DATA_VALID            14
+#define MODULE_ID_VIBRATION             15
+#define MODULE_ID_SIMULATOR             16
+#define MODULE_ID_SYSTEM                17
+#define MODULE_ID_PROTOCOL              18
+#define MODULE_ID_MAX                   19
 
 /* ==================== 生命周期 API ==================== */
 
