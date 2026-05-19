@@ -296,7 +296,16 @@ static int serialize_analysis_result_to_json(const struct analysis_result *resul
         }
     }
 
-    pos += snprintf(buffer + pos, buf_size - pos, "]}}");
+    /* AI 分类结果 */
+    pos += snprintf(buffer + pos, buf_size - pos,
+        "],\"ai\":{\"class_id\":%d,\"class_name\":\"%s\","
+        "\"confidence\":%.4f,\"cascade_source\":\"%s\","
+        "\"inference_time_us\":%u}}",
+        result->ai_class_id,
+        result->ai_class_name[0] ? result->ai_class_name : "unclassified",
+        (double)result->ai_confidence,
+        result->ai_cascade_source[0] ? result->ai_cascade_source : "none",
+        (unsigned int)result->ai_inference_time_us);
 
     if ((size_t)pos >= buf_size) {
         return APP_ERR_MQTT_BUFFER_OVERFLOW;
