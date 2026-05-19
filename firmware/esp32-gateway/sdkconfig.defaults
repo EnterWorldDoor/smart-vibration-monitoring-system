@@ -31,6 +31,26 @@ CONFIG_LWIP_TCP_SND_BUF_SIZE=8192
 CONFIG_LWIP_TCP_RECVMBUF_SIZE=8192
 
 # ============================================================
+# 3.5 分区表配置 (使用自定义 partitions.csv, 16MB Flash)
+# ============================================================
+CONFIG_PARTITION_TABLE_CUSTOM=y
+# CONFIG_PARTITION_TABLE_SINGLE_APP is not set
+
+# ============================================================
+# 4. PSRAM 启用 (ESP32-S3 DevKitC-1: 8MB Octal PSRAM)
+# ============================================================
+CONFIG_ESP32S3_SPIRAM_SUPPORT=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_SPEED_80M=y
+CONFIG_SPIRAM_BOOT_INIT=y
+CONFIG_SPIRAM_USE_CAPS_ALLOC=y
+
+# ============================================================
+# 5. 编译优化 (减小固件体积)
+# ============================================================
+CONFIG_COMPILER_OPTIMIZATION_SIZE=y
+
+# ============================================================
 # 已移除的无效配置项 (ESP-IDF v5.5.3中不存在)
 # ============================================================
 # CONFIG_FREERTOS_IDLE_TASK_STACK_SIZE=2048      ← 不存在!

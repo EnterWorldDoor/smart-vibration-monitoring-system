@@ -32,7 +32,7 @@
 
 /* ==================== 配置常量 ==================== */
 
-#define DSP_FFT_MAX_SIZE               1024    /**< 最大 FFT 点数 (2^10) */
+#define DSP_FFT_MAX_SIZE               512     /**< 最大 FFT 点数 (2^9, 缩减以适配 TFLite) */
 #define DSP_FFT_DEFAULT_SIZE           512     /**< 默认 FFT 点数 (2^9) */
 #define DSP_MAX_WINDOW_COEFF           2048    /**< 最大窗函数系数缓存 */
 #define DSP_NUM_PEAKS                  10      /**< 返回的最大峰值数量 */

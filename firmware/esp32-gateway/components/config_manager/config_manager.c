@@ -65,7 +65,7 @@ static const struct system_config DEFAULT_CONFIG = {
 
     /* Sensor Service 传感器服务 */
     .sample_rate_hz                 = 400,
-    .sensor_buffer_size             = 1024,
+    .sensor_buffer_size             = 256,   /* 减少以适配 TFLite Micro 内存占用 */
     .analysis_interval_ms           = 1000,
     .sensor_enable_temp_from_protocol = true,
     .sensor_enable_detailed_log     = false,

@@ -1095,6 +1095,44 @@ int protocol_register_time_sync_callback(proto_time_sync_callback_t cb,
     return APP_ERR_OK;
 }
 
+/* ==================== 电机控制协议 ==================== */
+
+int protocol_send_motor_control(uint8_t subcmd, int32_t value)
+{
+	uint8_t payload[5];
+
+	payload[0] = subcmd;
+	memcpy(&payload[1], &value, sizeof(int32_t));
+
+	return protocol_send(CMD_MOTOR_CONTROL, payload, 5);
+}
+
+int protocol_send_motor_query(void)
+{
+	return protocol_send(CMD_MOTOR_QUERY, NULL, 0);
+}
+
+int protocol_parse_motor_status(const uint8_t *data, uint16_t len,
+				struct motor_status *status)
+{
+	uint16_t off = 0;
+
+	if (!data || !status || len < 24)
+		return APP_ERR_INVALID_PARAM;
+
+	memcpy(&status->rpm,        &data[off], 4);  off += 4;
+	memcpy(&status->current_ma, &data[off], 4);  off += 4;
+	memcpy(&status->bus_mv,     &data[off], 4);  off += 4;
+	memcpy(&status->temp_dc,    &data[off], 4);  off += 4;
+	status->state      = data[off++];
+	status->fault      = data[off++];
+	memcpy(&status->duty,       &data[off], 4);  off += 4;
+	status->direction  = (int8_t)data[off++];
+	status->pid_active = (bool)(data[off] != 0);
+
+	return APP_ERR_OK;
+}
+
 int protocol_initiate_time_sync(void)
 {
     if (!g_proto.initialized) return APP_ERR_PROTO_NOT_INIT;

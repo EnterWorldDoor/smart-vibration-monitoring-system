@@ -20,6 +20,8 @@
 #include "ringbuf.h"
 #include "global_error.h"
 #include "log_system.h"
+#include "ai_service.h"
+#include "data_manager.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -114,6 +116,17 @@ static void dispatch_analysis_callbacks(const struct analysis_result *result)
         if (g_ss.analysis_callbacks[i].cb) {
             g_ss.analysis_callbacks[i].cb(result,
                                             g_ss.analysis_callbacks[i].user_data);
+        }
+    }
+
+    /* Push to data_manager — single source of truth for all downstream consumers */
+    int dm_ret = data_manager_push(result);
+    if (dm_ret != APP_ERR_OK) {
+        static uint32_t last_dm_warn = 0;
+        uint32_t now_dm = (uint32_t)(esp_timer_get_time() / 1000LL);
+        if ((now_dm - last_dm_warn) >= 10000) {
+            LOG_WARN("SENSOR", "data_manager_push failed: %d", dm_ret);
+            last_dm_warn = now_dm;
         }
     }
 }
@@ -290,6 +303,9 @@ static int perform_single_analysis(struct analysis_result *result)
         }
     }
 
+    /* Feed raw samples to AI service for feature extraction (before DSP modifies them) */
+    ai_service_feed_frame(x_buf, y_buf, z_buf, actual_count);
+
     float sampling_rate = (float)g_ss.config.sample_rate_hz;
     ret = dsp_fft_compute_3axis(x_buf, y_buf, z_buf, actual_count,
                                 sampling_rate, g_ss.config.window_type,
@@ -338,6 +354,30 @@ static int perform_single_analysis(struct analysis_result *result)
         memset(&result->adxl_health, 0, sizeof(result->adxl_health));
         result->adxl_health.level = ADXL345_HEALTH_FAULT;  /* 标记设备不可用 */
         result->adxl_health.selftest_passed = false;
+    }
+
+    /* Update AI service temperature context */
+    if (result->temperature_valid) {
+        ai_service_set_temperature(result->temperature_c);
+    }
+
+    /* Run AI inference (synchronous — blocks up to 80ms) */
+    {
+        ai_classification_t ai_cls;
+        if (ai_service_infer(&ai_cls) == APP_ERR_OK) {
+            result->ai_class_id        = (int)ai_cls.class_id;
+            result->ai_confidence      = ai_cls.confidence;
+            result->ai_inference_time_us = ai_cls.inference_time_us;
+            strncpy(result->ai_class_name, ai_cls.class_name, sizeof(result->ai_class_name) - 1);
+            strncpy(result->ai_cascade_source, ai_cls.cascade_source,
+                    sizeof(result->ai_cascade_source) - 1);
+        } else {
+            result->ai_class_id = 255;
+            result->ai_confidence = 0.0f;
+            result->ai_inference_time_us = 0;
+            strncpy(result->ai_class_name, "unclassified", sizeof(result->ai_class_name) - 1);
+            strncpy(result->ai_cascade_source, "error", sizeof(result->ai_cascade_source) - 1);
+        }
     }
 
     protocol_get_stats(&result->protocol_stats);
@@ -463,6 +503,23 @@ static void sensor_service_task(void *arg)
             degraded_result.adxl_health.level = ADXL345_HEALTH_FAULT;
             degraded_result.adxl_health.selftest_passed = false;
             degraded_result.adxl_health.comm_errors = 1;  /* 标记通信异常 */
+
+            /* Run AI inference in degraded mode (fallback rule engine) */
+            if (degraded_result.temperature_valid) {
+                ai_service_set_temperature(degraded_result.temperature_c);
+            }
+            {
+                ai_classification_t ai_cls;
+                if (ai_service_infer(&ai_cls) == APP_ERR_OK) {
+                    degraded_result.ai_class_id        = (int)ai_cls.class_id;
+                    degraded_result.ai_confidence      = ai_cls.confidence;
+                    degraded_result.ai_inference_time_us = ai_cls.inference_time_us;
+                    strncpy(degraded_result.ai_class_name, ai_cls.class_name,
+                            sizeof(degraded_result.ai_class_name) - 1);
+                    strncpy(degraded_result.ai_cascade_source, ai_cls.cascade_source,
+                            sizeof(degraded_result.ai_cascade_source) - 1);
+                }
+            }
 
             static uint32_t last_degraded_upload = 0;
             uint32_t now = (uint32_t)(esp_timer_get_time() / 1000LL);

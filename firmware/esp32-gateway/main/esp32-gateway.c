@@ -70,6 +70,8 @@
 #include "time_sync.h"            /* 时间同步 (SNTP) */
 #include "protocol.h"             /* UART 协议栈 (STM32通信) */
 #include "sensor_service.h"       /* 传感器服务 (ADXL345+DSP) */
+#include "ai_service.h"            /* AI推理服务 (TinyML + 级联) */
+#include "data_manager.h"          /* 数据管理器 (系统数据总线) */
 #include "mqtt.h"                  /* MQTT 通信模块 (mqtt_app组件) */
 
 /* 引入硬件引脚配置 (集中管理所有GPIO定义) */
@@ -814,22 +816,21 @@ static int component_init_sensor(void)
 
     if (sys_cfg) {
         sensor_cfg.sample_rate_hz = sys_cfg->sample_rate_hz;
-        sensor_cfg.ring_buffer_size = sys_cfg->sensor_buffer_size;
         sensor_cfg.fft_size = sys_cfg->fft_size;
         sensor_cfg.analysis_interval_ms = sys_cfg->analysis_interval_ms;
         sensor_cfg.enable_temp_compensation = sys_cfg->temp_comp_enabled;
         sensor_cfg.enable_protocol_temp = sys_cfg->sensor_enable_temp_from_protocol;
-        sensor_cfg.enable_detailed_logging = false;  /* 生产环境关闭详细日志 */
+        sensor_cfg.enable_detailed_logging = false;
     } else {
-        /* 默认配置 (无NVS配置时的后备方案) */
-        sensor_cfg.sample_rate_hz = 400;           /* 400 Hz 采样率 */
-        sensor_cfg.ring_buffer_size = 1024;        /* 1024 样本环形缓冲区 */
-        sensor_cfg.fft_size = 512;                 /* 512 点 FFT */
-        sensor_cfg.analysis_interval_ms = 1000;    /* 每1秒分析一次 */
+        sensor_cfg.sample_rate_hz = 400;
+        sensor_cfg.fft_size = 512;
+        sensor_cfg.analysis_interval_ms = 1000;
         sensor_cfg.enable_temp_compensation = true;
         sensor_cfg.enable_protocol_temp = true;
         sensor_cfg.enable_detailed_logging = false;
     }
+    /* 强制使用小缓冲区，避免 TFLite Micro 导致 DRAM 不足 */
+    sensor_cfg.ring_buffer_size = 256;
 
     /* 初始化传感器服务 */
     ret = sensor_service_init(&sensor_cfg);
@@ -838,12 +839,7 @@ static int component_init_sensor(void)
         return ret;
     }
 
-    /* 注册分析完成回调 (当RMS/FFT完成后调用, 将结果推送到MQTT队列) */
-    ret = sensor_service_register_analysis_callback(on_analysis_ready, &g_ctx);
-    if (ret != APP_ERR_OK) {
-        LOG_ERROR("INIT", "Failed to register analysis callback (err=%d)", ret);
-        return ret;
-    }
+    /* 数据分发已由 data_manager 统一管理 (替代 Q2 队列 + 回调) */
 
     /* 注册传感器错误回调 */
     ret = sensor_service_register_error_callback(on_sensor_error, &g_ctx);
@@ -1490,22 +1486,26 @@ static void task_sensor_process(void *arg)
 static void task_mqtt_upload(void *arg)
 {
     (void)arg;
-    static struct analysis_result analysis;
+    static system_data_packet_t pkt;
 
     LOG_INFO("TASK-MQTT", "MQTT upload task started (priority=%d)",
              TASK_PRIORITY_MQTT);
 
     while (g_ctx.system_running) {
-        BaseType_t ret = xQueueReceive(g_ctx.q_analysis_result, &analysis,
-                                       pdMS_TO_TICKS(2000));
-
-        if (ret != pdTRUE) {
-            static uint32_t last_q2_empty = 0;
-            uint32_t now_q2 = (uint32_t)(esp_timer_get_time() / 1000LL);
-            if ((now_q2 - last_q2_empty) >= 30000) {
-                LOG_INFO("TASK-MQTT", "Q2 queue empty (no analysis results from sensor_service)");
-                last_q2_empty = now_q2;
+        /* Block on data_manager notification instead of Q2 queue */
+        int wait_ret = data_manager_wait_for_new(2000);
+        if (wait_ret != APP_ERR_OK) {
+            static uint32_t last_dm_empty = 0;
+            uint32_t now_dm = (uint32_t)(esp_timer_get_time() / 1000LL);
+            if ((now_dm - last_dm_empty) >= 30000) {
+                LOG_INFO("TASK-MQTT", "No new data from sensor_service (data_manager empty)");
+                last_dm_empty = now_dm;
             }
+            goto print_stats;
+        }
+
+        int get_ret = data_manager_get_latest(&pkt);
+        if (get_ret != APP_ERR_OK) {
             goto print_stats;
         }
 
@@ -1525,7 +1525,7 @@ static void task_mqtt_upload(void *arg)
          *   只有 samples_analyzed==0 && temperature_valid==false 才跳过
          *   有温湿度数据时正常走发布流程
          */
-        if (analysis.samples_analyzed == 0 && !analysis.temperature_valid) {
+        if (pkt.payload.samples_analyzed == 0 && !pkt.payload.temperature_valid) {
             static uint32_t last_skip_log = 0;
             uint32_t now_skip = (uint32_t)(esp_timer_get_time() / 1000LL);
             if ((now_skip - last_skip_log) >= 30000) {
@@ -1535,12 +1535,12 @@ static void task_mqtt_upload(void *arg)
             goto print_stats;
         }
 
-        if (analysis.samples_analyzed == 0 && analysis.temperature_valid) {
+        if (pkt.payload.samples_analyzed == 0 && pkt.payload.temperature_valid) {
             static uint32_t last_degraded_log = 0;
             uint32_t now_dg = (uint32_t)(esp_timer_get_time() / 1000LL);
             if ((now_dg - last_degraded_log) >= 10000) {
                 LOG_INFO("TASK-MQTT", "Publishing degraded result (T=%.1f°C H=%.1f%% vib=0)",
-                         analysis.temperature_c, analysis.humidity_rh);
+                         pkt.payload.temperature_c, pkt.payload.humidity_rh);
                 last_degraded_log = now_dg;
             }
         }
@@ -1553,11 +1553,11 @@ static void task_mqtt_upload(void *arg)
                          g_ctx.stats.analysis_published);
                 last_offline_log = now_off;
             }
-            mqtt_publish_analysis_result(&analysis, 0);
+            mqtt_publish_analysis_result(&pkt.payload, 0);
             goto print_stats;
         }
 
-        int pub_ret = mqtt_publish_analysis_result(&analysis, 0);
+        int pub_ret = mqtt_publish_analysis_result(&pkt.payload, 0);
 
         if (pub_ret == APP_ERR_OK) {
             g_ctx.stats.mqtt_publish_success++;
@@ -1568,8 +1568,8 @@ static void task_mqtt_upload(void *arg)
             if ((now_pub - last_pub_ok) >= 10000) {
                 LOG_INFO("TASK-MQTT", "Published #%u (RMS=%.4fg F=%.1fHz T=%.1f°C)",
                          g_ctx.stats.analysis_published,
-                         analysis.overall_rms_g, analysis.peak_frequency_hz,
-                         analysis.temperature_c);
+                         pkt.payload.overall_rms_g, pkt.payload.peak_frequency_hz,
+                         pkt.payload.temperature_c);
                 last_pub_ok = now_pub;
             }
         } else if (pub_ret == APP_ERR_NO_DATA) {
@@ -1587,13 +1587,14 @@ static void task_mqtt_upload(void *arg)
             uint32_t now_pf = (uint32_t)(esp_timer_get_time() / 1000LL);
             if ((now_pf - last_pub_fail_warn) >= 30000) {
                 LOG_WARN("TASK-MQTT", "Publish failed (err=%d samples=%u rms=%.4f)",
-                         pub_ret, analysis.samples_analyzed, analysis.overall_rms_g);
+                         pub_ret, pkt.payload.samples_analyzed, pkt.payload.overall_rms_g);
                 last_pub_fail_warn = now_pf;
             }
         }
 
 print_stats:
         static uint32_t last_stats = 0;
+        static uint32_t last_ai_health_pub = 0;
         uint32_t now = (uint32_t)(esp_timer_get_time() / 1000LL);
 
         if ((now - last_stats) >= 30000) {
@@ -1602,6 +1603,36 @@ print_stats:
                      g_ctx.stats.mqtt_publish_failed,
                      g_ctx.stats.analysis_published);
             last_stats = now;
+        }
+
+        /* Publish AI health to separate topic every 30 seconds */
+        if (mqtt_is_connected() && (now - last_ai_health_pub) >= 30000) {
+            const ai_health_t *ai_h = ai_service_get_health();
+            if (ai_h && ai_h->total_inferences > 0) {
+                char ai_health_json[512];
+                int len = snprintf(ai_health_json, sizeof(ai_health_json),
+                    "{\"total_inferences\":%u,\"primary_count\":%u,"
+                    "\"fallback_count\":%u,\"coldstart_count\":%u,"
+                    "\"timeout_count\":%u,\"error_count\":%u,"
+                    "\"avg_confidence\":%.4f,\"avg_inference_time_us\":%u,"
+                    "\"last_inference_ts\":%llu}",
+                    (unsigned int)ai_h->total_inferences,
+                    (unsigned int)ai_h->primary_count,
+                    (unsigned int)ai_h->fallback_count,
+                    (unsigned int)ai_h->coldstart_count,
+                    (unsigned int)ai_h->timeout_count,
+                    (unsigned int)ai_h->error_count,
+                    (double)ai_h->avg_confidence,
+                    (unsigned int)ai_h->avg_inference_time_us,
+                    (unsigned long long)ai_h->last_inference_timestamp_us);
+                if (len > 0 && (size_t)len < sizeof(ai_health_json)) {
+                    char topic[64];
+                    snprintf(topic, sizeof(topic), "edgevib/%u/health/ai",
+                             config_manager_get_device_id());
+                    mqtt_publish_custom(topic, ai_health_json, (size_t)len, 1, false);
+                }
+            }
+            last_ai_health_pub = now;
         }
     }
 
@@ -1872,6 +1903,26 @@ void app_main(void)
     }
     LOG_INFO("MAIN", "Sensor service initialized OK");
 
+    /* ========== 第7.5步: 初始化 AI 推理服务 ========== */
+    LOG_INFO("MAIN", "Initializing AI inference service...");
+
+    ret = ai_service_init(NULL);
+    if (ret != APP_ERR_OK) {
+        LOG_WARN("MAIN", "AI service init failed (err=%d), continuing with fallback-only", ret);
+    } else {
+        LOG_INFO("MAIN", "AI inference service initialized OK");
+    }
+
+    /* ========== 第7.6步: 初始化数据管理器 (系统数据总线) ========== */
+    LOG_INFO("MAIN", "Initializing data manager...");
+
+    ret = data_manager_init();
+    if (ret != APP_ERR_OK) {
+        LOG_ERROR("MAIN", "Data manager init failed (err=%d)", ret);
+        return;  /* 致命: MQTT 任务依赖 data_manager */
+    }
+    LOG_INFO("MAIN", "Data manager initialized OK");
+
     /* ========== 第8步: 初始化 MQTT 通信 ========== */
     LOG_INFO("MAIN", "Initializing MQTT module (connecting to broker)...");
     
@@ -1895,15 +1946,11 @@ void app_main(void)
     LOG_INFO("MAIN", "Created temp data queue (depth=%d, item_size=%u bytes)",
              QUEUE_DEPTH_TEMP_DATA, sizeof(struct temp_humidity_data));
 
-    /* Q2: 分析结果队列 (Sensor→MQTT) */
-    g_ctx.q_analysis_result = xQueueCreate(QUEUE_DEPTH_ANALYSIS,
-                                            sizeof(struct analysis_result));
-    if (!g_ctx.q_analysis_result) {
-        LOG_ERROR("MAIN", "Failed to create analysis result queue!");
-        return;
-    }
-    LOG_INFO("MAIN", "Created analysis result queue (depth=%d, item_size=%u bytes)",
-             QUEUE_DEPTH_ANALYSIS, sizeof(struct analysis_result));
+    /* Q2 已被 data_manager 替代 — 不再创建
+     * 保留此注释以记录架构变更: data_manager 提供环形缓冲历史 + 通知队列,
+     * 替代原来的 FreeRTOS Q2 队列 (depth=4, 约20KB 内存节省).
+     */
+    (void)QUEUE_DEPTH_ANALYSIS;  /* 保留配置常量以消除未使用警告 */
 
     /* ========== 第10步: 设置运行状态 ========== */
     g_ctx.system_running = true;
