@@ -80,6 +80,75 @@ static const struct error_desc {
         { ERR_RTOS_QUEUE_CREATE_FAIL, "queue create fail" },
         { ERR_RTOS_MUTEX_CREATE_FAIL, "mutex create fail" },
         { ERR_RTOS_SEM_CREATE_FAIL,   "semaphore create fail" },
+
+        /* 协议栈错误 */
+        { ERR_PROTO_FRAME_OVERFLOW,     "protocol frame overflow" },
+        { ERR_PROTO_SEND_FAIL,          "protocol send failed" },
+        { ERR_PROTO_INVALID_DATA,       "protocol invalid data" },
+        { ERR_PROTO_CRC_MISMATCH,       "protocol crc mismatch" },
+        { ERR_PROTO_ALREADY_INIT,       "protocol already init" },
+        { ERR_PROTO_NOT_INIT,           "protocol not initialized" },
+        { ERR_PROTO_ACK_TIMEOUT,        "protocol ack timeout" },
+        { ERR_PROTO_NO_DATA,            "protocol no data" },
+        { ERR_PROTO_BATCH_OVERFLOW,     "protocol batch overflow" },
+        { ERR_PROTO_CALLBACK_FULL,      "protocol callback full" },
+
+        /* LCD 显示错误 */
+        { ERR_LCD_INIT_FAIL,            "LCD init failed" },
+        { ERR_LCD_NOT_INIT,             "LCD not initialized" },
+        { ERR_LCD_INVALID_PARAM,        "LCD invalid parameter" },
+        { ERR_LCD_BUS_BUSY,             "LCD bus busy" },
+        { ERR_LCD_FLUSH_FAIL,           "LCD flush failed" },
+        { ERR_LCD_BACKLIGHT_FAIL,       "LCD backlight failed" },
+
+        /* GUI 界面错误 */
+        { ERR_GUI_INIT_FAIL,            "GUI init failed" },
+        { ERR_GUI_CREATE_SCREEN_FAIL,   "GUI create screen failed" },
+        { ERR_GUI_INVALID_MODULE,       "GUI invalid module" },
+        { ERR_GUI_RESOURCE_FAIL,        "GUI resource allocation failed" },
+
+        /* EEPROM 存储错误 */
+        { ERR_EEPROM_INIT_FAIL,         "EEPROM init failed" },
+        { ERR_EEPROM_NOT_INIT,          "EEPROM not initialized" },
+        { ERR_EEPROM_WRITE_FAIL,        "EEPROM write failed" },
+        { ERR_EEPROM_READ_FAIL,         "EEPROM read failed" },
+        { ERR_EEPROM_INVALID_ADDR,      "EEPROM invalid address" },
+        { ERR_EEPROM_BUS_BUSY,          "EEPROM bus busy" },
+
+        /* Flash 存储错误 */
+        { ERR_FLASH_INIT_FAIL,          "Flash init failed" },
+        { ERR_FLASH_ERASE_FAIL,         "Flash erase failed" },
+        { ERR_FLASH_WRITE_FAIL,         "Flash write failed" },
+        { ERR_FLASH_READ_FAIL,          "Flash read failed" },
+        { ERR_FLASH_INVALID_ADDR,       "Flash invalid address" },
+        { ERR_FLASH_LOCKED,             "Flash locked" },
+
+        /* 数据验证错误 */
+        { ERR_DATA_OUT_OF_RANGE,        "data out of range" },
+        { ERR_DATA_STALE,               "data is stale" },
+        { ERR_DATA_CHECKSUM_FAIL,       "data checksum failed" },
+        { ERR_DATA_NOISE_THRESHOLD,     "data noise threshold exceeded" },
+        { ERR_DATA_INVALID_FORMAT,      "data invalid format" },
+
+        /* 振动分析错误 */
+        { ERR_VIB_INIT_FAIL,            "vibration init failed" },
+        { ERR_VIB_NOT_INIT,             "vibration not initialized" },
+        { ERR_VIB_BUFFER_OVERFLOW,      "vibration buffer overflow" },
+        { ERR_VIB_INVALID_FREQ,         "vibration invalid frequency" },
+        { ERR_VIB_FFT_FAIL,             "vibration FFT failed" },
+        { ERR_VIB_NO_DATA,              "vibration no data" },
+
+        /* 模拟传感器错误 */
+        { ERR_SIM_INIT_FAIL,            "simulator init failed" },
+        { ERR_SIM_NOT_INIT,             "simulator not initialized" },
+        { ERR_SIM_DATA_BOUNDARY,        "simulator data boundary" },
+        { ERR_SIM_INVALID_PARAM,        "simulator invalid parameter" },
+
+        /* 系统配置错误 */
+        { ERR_SYS_CLOCK_CONFIG_FAIL,    "system clock config failed" },
+        { ERR_SYS_PERIPH_INIT_FAIL,     "system peripheral init failed" },
+        { ERR_SYS_WATCHDOG_FAIL,        "system watchdog error" },
+        { ERR_SYS_BROWNOUT_DETECTED,    "system brownout detected" },
 };
 
 #define ERROR_TABLE_SIZE  (sizeof(error_table) / sizeof(error_table[0]))
