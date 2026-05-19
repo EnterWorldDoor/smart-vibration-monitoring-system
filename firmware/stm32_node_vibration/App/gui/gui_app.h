@@ -23,7 +23,7 @@
 #ifndef __GUI_APP_H
 #define __GUI_APP_H
 
-#include "lvgl.h"
+#include "../../lvgl.h"
 
 /* ==================== 屏幕尺寸常量 ==================== */
 
@@ -41,15 +41,16 @@
 /* ==================== 颜色主题 (平板APP风格) ==================== */
 
 /*
- * 配色方案: 浅色系 + 高饱和度强调色
- * 背景: 浅灰磨砂 (#EFEBE9)
+ * 配色方案: 粉白系 + 高饱和度强调色
+ * 背景: 粉白 (#FEF0F5, RGB 254/240/245)
  * 卡片: 白色 (#FFFFFF) + 轻阴影
  * 文字: 深灰 (#212121)
  */
-#define THEME_BG_COLOR           lv_color_hex(0xEFEBE9)
-#define THEME_CARD_COLOR         lv_color_hex(0xFFFFFF)
-#define THEME_TEXT_PRIMARY       lv_color_hex(0x212121)
-#define THEME_TEXT_SECONDARY     lv_color_hex(0x757575)
+/* 使用lv_color_make确保RGB565转换正确 (避免lv_color_hex的位操作不确定性) */
+#define THEME_BG_COLOR           lv_color_make(254, 240, 245)  /* #FEF0F5 粉白 */
+#define THEME_CARD_COLOR         lv_color_make(255, 255, 255)  /* #FFFFFF 白色 */
+#define THEME_TEXT_PRIMARY       lv_color_make( 33,  33,  33)  /* #212121 深灰 */
+#define THEME_TEXT_SECONDARY     lv_color_make(117, 117, 117)  /* #757575 中灰 */
 
 /* 模块配色 (每个模块独特颜色) */
 #define COLOR_MOTOR              lv_color_hex(0x26A69A)  /* 蓝绿色 */
@@ -110,13 +111,25 @@ void gui_app_show_module_screen(enum gui_module_id module_id);
 void gui_app_show_main_screen(void);
 
 /**
- * gui_app_update_sensor_data - 更新传感器数据显示
- * @temperature: 温度值 (°C)
- * @humidity: 湿度值 (%RH)
- *
- * 在温湿度界面实时更新数值
+ * gui_app_update_sensor_data - 更新温湿度传感器数据 (线程安全)
+ * @temperature: 温度值 (°C, DS18B20)
+ * @humidity: 湿度值 (%RH, 模拟)
  */
 void gui_app_update_sensor_data(float temperature, float humidity);
+
+/**
+ * gui_app_update_ntc_data - 更新NTC传感器数据 (线程安全)
+ * @temperature: NTC温度值 (°C)
+ */
+void gui_app_update_ntc_data(float temperature);
+
+/**
+ * gui_app_process_updates - 处理跨任务数据更新
+ *
+ * 必须在 lvgl_gui 任务上下文中周期调用 (在 lv_timer_handler() 之后)。
+ * 消费 app_enterprise 任务写入的共享数据, 安全更新LVGL控件。
+ */
+void gui_app_process_updates(void);
 
 /**
  * gui_app_update_motor_status - 更新电机状态显示
@@ -126,6 +139,43 @@ void gui_app_update_sensor_data(float temperature, float humidity);
  */
 void gui_app_update_motor_status(uint32_t speed,
                                   bool is_running,
-                                  int8_t direction);
+                                  int8_t direction,
+                                  bool pid_active,
+                                  int32_t target_rpm);
+
+/*
+ * 电机控制命令共享 (GUI任务 → app_enterprise任务)
+ * 由gui_app.c定义, app_main.c通过extern访问。
+ */
+struct motor_cmd {
+        bool start_request;
+        bool stop_request;
+        bool duty_changed;
+        bool dir_changed;
+        int8_t slider_percent;
+        int8_t direction;
+        bool pid_toggle_request;
+        bool pid_active;
+        int32_t target_rpm;
+};
+extern volatile struct motor_cmd motor_cmd_shared;
+
+/**
+ * gui_app_consume_motor_cmds - 消费GUI电机控制命令
+ *
+ * 必须在 app_enterprise 任务上下文中周期调用。
+ * 读取GUI事件回调设置的共享命令, 安全调用 bsp_motor_* 函数。
+ */
+void gui_app_consume_motor_cmds(void);
+
+/**
+ * gui_app_touch_input_init - 初始化触摸输入设备
+ *
+ * 创建LVGL输入设备驱动并注册触摸扫描回调。
+ * 必须在 gui_app_init() 之后、lvgl_gui 任务启动之前调用。
+ *
+ * Return: 0 成功, 负值错误码
+ */
+int gui_app_touch_input_init(void);
 
 #endif /* __GUI_APP_H */
