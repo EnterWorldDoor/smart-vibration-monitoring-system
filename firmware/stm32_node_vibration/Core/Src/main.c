@@ -54,6 +54,7 @@
 #include "system_log/system_log.h"
 #include "cmsis_os2.h"                 /* CMSIS-RTOS2 API (osKernelStart) */
 #include "uart_log/uart_log.h"
+#include "App/can_nde.h"
 /* USER CODE END Includes */
 
 /* Private define ------------------------------------------------------------*/
@@ -224,19 +225,25 @@ int main(void)
   MX_CAN1_Init();                /* CAN总线通信 */
   pr_info_with_tag("SYS", "[DEBUG] CAN1 OK\n");
 
+  /* NDE CAN接收初始化 (滤波器+启动+中断) */
+  can_nde_init();
+  pr_info_with_tag("SYS", "[DEBUG] CAN NDE OK\n");
+
   /* RTC实时时钟 */
   pr_info_with_tag("SYS", "[DEBUG] Initializing RTC...\n");
   MX_RTC_Init();                 /* 系统时间戳 */
   pr_info_with_tag("SYS", "[DEBUG] RTC OK\n");
 
   /*
-   * ⚠️ 看门狗禁用 (调试阶段)
-   * 生产环境请启用:
-   *   MX_IWDG_Init();           // 独立看门狗
-   *   MX_WWDG_Init();           // 窗口看门狗
+   * IWDG 独立看门狗已启用 (3s超时, LSI 40kHz)
+   * WWDG已放弃 — 最大超时~49ms不可用于FreeRTOS秒级任务
+   * wdg_daemon_task (osPriorityHigh, 500ms) 负责心跳检测+喂狗
    */
+  MX_IWDG_Init();
 
-  pr_info_with_tag("SYS", "[OK] All peripherals initialized (except watchdog)\n");
+  uart4_dma_tx_init();
+
+  pr_info_with_tag("SYS", "[OK] All peripherals initialized (IWDG 3s, DMA TX)\n");
 
   /*
    * ⚠️ 注意: 日志系统已在SysInit阶段(最前面)初始化!

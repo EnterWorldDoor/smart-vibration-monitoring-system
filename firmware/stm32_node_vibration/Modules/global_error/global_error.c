@@ -49,6 +49,10 @@ static const struct error_desc {
         { ERR_SENSOR_DATA_OVERRUN, "sensor data overrun" },
         { ERR_SENSOR_COMM_FAIL,   "sensor comm fail" },
 
+        /* NTC 温度传感器错误 */
+        { ERR_NTC_TIMEOUT,       "NTC timeout" },
+        { ERR_NTC_OUT_OF_RANGE,  "NTC out of range" },
+
         /* DHT11 温湿度传感器错误 */
         { ERR_DHT11_INIT_FAIL,      "DHT11 init failed" },
         { ERR_DHT11_NOT_INIT,       "DHT11 not initialized" },

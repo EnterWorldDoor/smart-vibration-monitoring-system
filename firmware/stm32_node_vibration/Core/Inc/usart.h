@@ -39,7 +39,8 @@ extern UART_HandleTypeDef huart1;
 extern UART_HandleTypeDef huart3;
 
 /* USER CODE BEGIN Private defines */
-
+extern DMA_HandleTypeDef hdma_spi2_tx;   /* from spi.c — needed for uart4_dma_tx_init */
+extern DMA_HandleTypeDef hdma_uart4_tx;   /* UART4 TX DMA (manual config) */
 /* USER CODE END Private defines */
 
 void MX_UART4_Init(void);
@@ -47,7 +48,7 @@ void MX_USART1_UART_Init(void);
 void MX_USART3_UART_Init(void);
 
 /* USER CODE BEGIN Prototypes */
-
+int uart4_dma_tx_init(void);
 /* USER CODE END Prototypes */
 
 #ifdef __cplusplus
