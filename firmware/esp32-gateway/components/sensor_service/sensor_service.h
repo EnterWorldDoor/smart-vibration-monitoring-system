@@ -108,6 +108,14 @@ struct analysis_result {
     char ai_cascade_source[24];    /**< 级联来源: "primary_cnn", "fallback_rule", "fallback_coldstart" */
     uint32_t ai_inference_time_us; /**< 推理耗时 (微秒) */
 
+    /* ---- 双通道对比诊断 (DE/NDE) ---- */
+    bool dual_channel_valid;           /**< NDE数据是否可用 */
+    float dual_rms_ratio;              /**< RMS比值 (DE/NDE), >1.5=不对中 */
+    float dual_spectral_similarity;    /**< 频谱相似度 (-1.0..1.0, 低=故障) */
+    float dual_phase_coherence;        /**< 主频吻合度 (0.0..1.0) */
+    uint8_t nde_online;                /**< NDE节点在线状态 (1=在线) */
+    uint8_t nde_error_count;           /**< NDE节点累计错误数 */
+
     /* ---- 健康指标 ---- */
     struct adxl345_health_info adxl_health; /**< ADXL345 健康状态 */
     struct proto_stats protocol_stats;      /**< 协议统计 */

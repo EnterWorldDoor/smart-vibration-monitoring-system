@@ -21,6 +21,45 @@
 #include "usart.h"
 
 /* USER CODE BEGIN 0 */
+#include <string.h>
+
+/* UART4 TX DMA handle — manually configured (DMA1_Stream4 conflicts with SPI2_TX in CubeMX) */
+DMA_HandleTypeDef hdma_uart4_tx;
+
+/**
+ * uart4_dma_tx_init - Configure UART4 TX DMA (DMA1_Stream4, Channel 4)
+ *
+ * MUST be called AFTER all MX_*_Init() functions complete, because
+ * SPI2_MspInit (called during MX_SPI2_Init) re-programs DMA1_Stream4
+ * for SPI2_TX. This function re-claims it for UART4 TX.
+ *
+ * DMA1_Stream4: Memory-to-Peripheral, Channel 4 (UART4_TX)
+ * CubeMX conflict resolution: SPI2_TX gives up DMA (Flash OTA is infrequent).
+ */
+int uart4_dma_tx_init(void)
+{
+    /* Disable and reset DMA1_Stream4 before reconfiguration */
+    HAL_DMA_DeInit(&hdma_spi2_tx);
+
+    memset(&hdma_uart4_tx, 0, sizeof(hdma_uart4_tx));
+    hdma_uart4_tx.Instance = DMA1_Stream4;
+    hdma_uart4_tx.Init.Channel = DMA_CHANNEL_4;         /* UART4_TX channel */
+    hdma_uart4_tx.Init.Direction = DMA_MEMORY_TO_PERIPH;
+    hdma_uart4_tx.Init.PeriphInc = DMA_PINC_DISABLE;
+    hdma_uart4_tx.Init.MemInc = DMA_MINC_ENABLE;
+    hdma_uart4_tx.Init.PeriphDataAlignment = DMA_PDATAALIGN_BYTE;
+    hdma_uart4_tx.Init.MemDataAlignment = DMA_MDATAALIGN_BYTE;
+    hdma_uart4_tx.Init.Mode = DMA_NORMAL;
+    hdma_uart4_tx.Init.Priority = DMA_PRIORITY_HIGH;
+    hdma_uart4_tx.Init.FIFOMode = DMA_FIFOMODE_DISABLE;
+
+    if (HAL_DMA_Init(&hdma_uart4_tx) != HAL_OK)
+        return -1;
+
+    __HAL_LINKDMA(&huart4, hdmatx, hdma_uart4_tx);
+
+    return 0;
+}
 
 /* USER CODE END 0 */
 

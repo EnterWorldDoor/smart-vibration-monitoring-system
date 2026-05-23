@@ -55,6 +55,7 @@
 #include "system_log/system_log.h"
 #include "cmsis_os2.h"                 /* CMSIS-RTOS2 API (osKernelStart) */
 #include "../../bsp/uart_log/uart_log.h"
+#include "App/can_nde.h"
 
 #include "../../bsp/lcd/lcd.h"
 #include "../../lvgl.h"
@@ -209,10 +210,12 @@ int main(void)
   MX_CAN1_Init();
   MX_FSMC_Init();
   MX_I2C2_Init();
-  /* MX_IWDG_Init();    ---- 禁用IWDG调试 */
+  /* MX_IWDG_Init();    ---- IWDG已启用 (3s, LSI 40kHz, wdg_daemon喂狗) */
+  MX_IWDG_Init();
   MX_RTC_Init();
   MX_SPI2_Init();
   MX_TIM1_Init();
+  MX_TIM2_Init();   /* 1kHz ADC trigger */
   MX_TIM3_Init();
   MX_UART4_Init();
   MX_USART1_UART_Init();
@@ -324,6 +327,18 @@ int main(void)
           }
   }
   pr_info_with_tag("SYS", "[OK] Motor BSP initialized (PWM safe, H-bridge off)\n");
+
+  /*
+   * NDE CAN接收初始化 (滤波器+启动+中断)
+   */
+  can_nde_init();
+  pr_info_with_tag("SYS", "[OK] CAN NDE receiver initialized\n");
+
+  /*
+   * UART4 TX DMA (DMA1_Stream4从SPI2_TX回收, 非阻塞发送)
+   */
+  uart4_dma_tx_init();
+  pr_info_with_tag("SYS", "[OK] UART4 TX DMA configured\n");
 
   /*
    * ======== 启动前准备 ========

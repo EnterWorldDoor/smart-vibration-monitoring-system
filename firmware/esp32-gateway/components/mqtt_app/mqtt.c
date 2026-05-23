@@ -57,6 +57,19 @@
 #include <stdlib.h>
 #include <inttypes.h>
 #include <math.h>
+
+/* NDE dual-channel state (external, defined in esp32-gateway.c) */
+struct nde_dual_state {
+    float nde_features[24];
+    float rms_ratio;
+    float spectral_similarity;
+    float phase_coherence;
+    uint8_t nde_online;
+    uint8_t nde_error_count;
+    int8_t  nde_temp_c;
+    bool    has_data;
+};
+extern struct nde_dual_state g_nde_dual;
 #include <esp_timer.h>
 #include <esp_random.h>
 
@@ -300,12 +313,26 @@ static int serialize_analysis_result_to_json(const struct analysis_result *resul
     pos += snprintf(buffer + pos, buf_size - pos,
         "],\"ai\":{\"class_id\":%d,\"class_name\":\"%s\","
         "\"confidence\":%.4f,\"cascade_source\":\"%s\","
-        "\"inference_time_us\":%u}}",
+        "\"inference_time_us\":%u}",
         result->ai_class_id,
         result->ai_class_name[0] ? result->ai_class_name : "unclassified",
         (double)result->ai_confidence,
         result->ai_cascade_source[0] ? result->ai_cascade_source : "none",
         (unsigned int)result->ai_inference_time_us);
+
+    /* 双通道对比诊断 (DE/NDE) */
+    if (g_nde_dual.has_data) {
+        pos += snprintf(buffer + pos, buf_size - pos,
+            ",\"dual_channel\":{\"rms_ratio\":%.4f,\"spectral_similarity\":%.4f,"
+            "\"phase_coherence\":%.4f,\"nde_online\":%u,\"nde_errors\":%u}",
+            (double)g_nde_dual.rms_ratio,
+            (double)g_nde_dual.spectral_similarity,
+            (double)g_nde_dual.phase_coherence,
+            (unsigned int)g_nde_dual.nde_online,
+            (unsigned int)g_nde_dual.nde_error_count);
+    }
+
+    pos += snprintf(buffer + pos, buf_size - pos, "}");
 
     if ((size_t)pos >= buf_size) {
         return APP_ERR_MQTT_BUFFER_OVERFLOW;

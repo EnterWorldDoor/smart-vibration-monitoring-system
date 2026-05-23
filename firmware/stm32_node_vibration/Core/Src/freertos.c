@@ -26,7 +26,28 @@
 #include "FreeRTOS.h"
 #include "task.h"
 #include "main.h"
-#include "cmsis_os.h"
+#include "cmsis_os2.h"                  /* CMSIS-RTOS2 API */
+
+/* Private includes ----------------------------------------------------------*/
+/* USER CODE BEGIN Includes */
+
+#include "system_log/system_log.h"     /* 日志系统 */
+#include "wdg/wdg_heartbeat.h"          /* 看门狗守护任务 */
+
+/* 应用层任务入口函数声明 */
+void app_dht11_task_entry(void *argument);  /* [App/app_main.c] */
+
+/* GUI任务入口函数声明 */
+#ifdef USE_GUI
+void gui_task_entry(void *argument);         /* [App/gui/gui_app.c] */
+#endif
+
+/* USER CODE END Includes */
+
+/* Private typedef -----------------------------------------------------------*/
+/* USER CODE BEGIN PTD */
+
+/* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
@@ -260,7 +281,23 @@ void MX_FREERTOS_Init(void) {
   }
 
   /*
-   * ======== 任务2: LVGL GUI刷新任务 (如果启用GUI) ========
+   * ======== 任务2: 看门狗心跳守护任务 ========
+   */
+  {
+    osThreadAttr_t wdg_task_attr = {
+      .name = "wdg_daemon",
+      .stack_size = 1024 * 4,              /* 4KB stack */
+      .priority = (osPriority_t) osPriorityHigh,
+    };
+    osThreadId_t wdg_handle = osThreadNew(wdg_daemon_task, NULL, &wdg_task_attr);
+    if (wdg_handle == NULL) {
+      pr_error_with_tag("RTOS", "FATAL: Failed to create wdg_daemon task!\n");
+      Error_Handler();
+    }
+  }
+
+  /*
+   * ======== 任务3: LVGL GUI刷新任务 (如果启用GUI) ========
    * 文件位置: App/gui/gui_app.c
    * 功能:
    *   - 调用 lv_timer_handler() 处理UI事件和动画
@@ -276,6 +313,17 @@ void MX_FREERTOS_Init(void) {
     .priority = (osPriority_t) GUI_TASK_PRIORITY,
   };
   osThreadNew(gui_task_entry, NULL, &gui_task_attr);
+
+  pr_info_with_tag("RTOS", "[OK] LVGL GUI task created (%dB stack)\n",
+                   GUI_TASK_STACK_SIZE);
+  #endif
+
+  pr_info_with_tag("RTOS", "[OK] FreeRTOS tasks initialized:\n");
+  pr_info_with_tag("RTOS", "  • defaultTask (idle)\n");
+  pr_info_with_tag("RTOS", "  • app_enterprise (simulation + ESP32)\n");
+  pr_info_with_tag("RTOS", "  • wdg_daemon (IWDG heartbeat)\n");
+  #ifdef USE_GUI
+  pr_info_with_tag("RTOS", "  • lvgl_gui (display refresh)\n");
   #endif
 
   /* USER CODE END RTOS_THREADS */

@@ -44,7 +44,8 @@ void MX_ADC1_Init(void);
 void MX_ADC3_Init(void);
 
 /* USER CODE BEGIN Prototypes */
-
+void adc_get_motor_data(float *current_a, float *voltage_v, float *temp_c);
+int  adc_start_dma(void);
 /* USER CODE END Prototypes */
 
 #ifdef __cplusplus

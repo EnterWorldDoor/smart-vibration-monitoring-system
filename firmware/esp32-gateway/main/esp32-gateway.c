@@ -282,6 +282,10 @@ static void on_protocol_error(int error_code,
 static void on_mqtt_event(int event_type,
                            const char *context,
                            void *user_data);
+static void on_nde_feature_received(uint8_t cmd, const uint8_t *data,
+                                    uint16_t len, void *user_data);
+static void on_nde_heartbeat_received(uint8_t cmd, const uint8_t *data,
+                                      uint16_t len, void *user_data);
 
 /* ==================== 初始化函数实现 ==================== */
 
@@ -779,6 +783,18 @@ static int component_init_protocol(void)
         LOG_WARN("INIT", "Failed to register proto error callback (err=%d)", ret);
     }
 
+    /* 注册 NDE 特征向量回调 (CMD 0x17) */
+    ret = protocol_register_callback(CMD_NDE_FEATURE, on_nde_feature_received, &g_ctx);
+    if (ret != APP_ERR_OK) {
+        LOG_WARN("INIT", "Failed to register NDE feature callback (err=%d)", ret);
+    }
+
+    /* 注册 NDE 心跳回调 (CMD 0x18) */
+    ret = protocol_register_callback(CMD_NDE_HEARTBEAT, on_nde_heartbeat_received, &g_ctx);
+    if (ret != APP_ERR_OK) {
+        LOG_WARN("INIT", "Failed to register NDE heartbeat callback (err=%d)", ret);
+    }
+
     /* 启动协议接收任务 (后台运行) */
     ret = protocol_start();
     if (ret != APP_ERR_OK) {
@@ -1073,6 +1089,93 @@ static void on_temp_data_received(const struct temp_humidity_data *data,
 
     LOG_DEBUG("CALLBACK", "Temp data received: T=%.1f°C, H=%.1f%%RH",
              data->temperature_c, data->humidity_rh);
+}
+
+/* ---- NDE dual-channel state (non-static for MQTT serialization) ---- */
+struct nde_dual_state {
+    float nde_features[24];
+    float rms_ratio;
+    float spectral_similarity;
+    float phase_coherence;
+    uint8_t nde_online;
+    uint8_t nde_error_count;
+    int8_t  nde_temp_c;
+    bool    has_data;
+} g_nde_dual;
+
+static void compute_dual_channel_diagnostics(const float *de_features,
+                                              const float *nde_features)
+{
+    /* RMS ratio: DE / NDE */
+    float de_rms = de_features[3];   /* overall_rms */
+    float nde_rms = nde_features[3];
+    g_nde_dual.rms_ratio = (nde_rms > 0.001f) ? (de_rms / nde_rms) : 0.0f;
+
+    /* Spectral similarity: Pearson correlation on X-axis band energy */
+    float sum_de = 0, sum_nde = 0, sum_de2 = 0, sum_nde2 = 0, sum_cross = 0;
+    for (int b = 0; b < 8; b++) {
+        float de_band = de_features[9 + b];
+        float nde_band = nde_features[9 + b];
+        sum_de  += de_band;
+        sum_nde += nde_band;
+        sum_de2  += de_band * de_band;
+        sum_nde2 += nde_band * nde_band;
+        sum_cross += de_band * nde_band;
+    }
+    float mean_de = sum_de / 8.0f, mean_nde = sum_nde / 8.0f;
+    float var_de = sum_de2 - 2.0f * mean_de * sum_de + 8.0f * mean_de * mean_de;
+    float var_nde = sum_nde2 - 2.0f * mean_nde * sum_nde + 8.0f * mean_nde * mean_nde;
+    float cov = sum_cross - mean_de * sum_nde - mean_nde * sum_de + 8.0f * mean_de * mean_nde;
+
+    if (var_de > 1e-9f && var_nde > 1e-9f) {
+        g_nde_dual.spectral_similarity = cov / sqrtf(var_de * var_nde);
+    } else {
+        g_nde_dual.spectral_similarity = 0.0f;
+    }
+
+    /* Phase coherence: dominant freq phase difference (simplified by freq alignment) */
+    float de_peak_freq = de_features[4];   /* peak_freq_x */
+    float nde_peak_freq = nde_features[4];
+    float freq_ratio = (nde_peak_freq > 1.0f)
+        ? fminf(de_peak_freq, nde_peak_freq) / fmaxf(de_peak_freq, nde_peak_freq)
+        : 0.0f;
+    g_nde_dual.phase_coherence = freq_ratio;
+
+    g_nde_dual.has_data = true;
+}
+
+static void on_nde_feature_received(uint8_t cmd, const uint8_t *data,
+                                    uint16_t len, void *user_data)
+{
+    (void)cmd;
+    (void)user_data;
+
+    if (len < 100)
+        return;
+
+    /* Parse 100-byte payload: [4 header] [96 feature bytes] */
+    const float *nde_feat = (const float *)(data + 4);
+    memcpy(g_nde_dual.nde_features, nde_feat, 24 * sizeof(float));
+
+    /* Get DE features and compute dual-channel diagnostics */
+    float de_features[24];
+    if (ai_service_get_latest_features(de_features) == 0) {
+        compute_dual_channel_diagnostics(de_features, g_nde_dual.nde_features);
+    }
+}
+
+static void on_nde_heartbeat_received(uint8_t cmd, const uint8_t *data,
+                                      uint16_t len, void *user_data)
+{
+    (void)cmd;
+    (void)user_data;
+
+    if (len < 4)
+        return;
+
+    g_nde_dual.nde_online = data[0];
+    g_nde_dual.nde_error_count = data[1];
+    g_nde_dual.nde_temp_c = (int8_t)data[2];
 }
 
 /**

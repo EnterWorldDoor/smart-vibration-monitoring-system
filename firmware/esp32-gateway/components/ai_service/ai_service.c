@@ -401,3 +401,13 @@ uint32_t ai_service_get_buffer_fill(void)
 {
     return s_feat_count;
 }
+
+int ai_service_get_latest_features(float *features_out)
+{
+    if (!features_out || s_feat_count == 0)
+        return -1;
+
+    uint32_t latest_idx = (s_feat_write_idx + AI_FEATURE_WINDOWS - 1) % AI_FEATURE_WINDOWS;
+    memcpy(features_out, s_feature_buf[latest_idx], AI_NUM_FEATURES * sizeof(float));
+    return 0;
+}
