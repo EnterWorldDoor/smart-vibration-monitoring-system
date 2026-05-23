@@ -21,6 +21,7 @@
 #include "adc.h"
 
 /* USER CODE BEGIN 0 */
+#include <stdbool.h>
 
 /* USER CODE END 0 */
 
@@ -47,14 +48,15 @@ void MX_ADC1_Init(void)
   hadc1.Instance = ADC1;
   hadc1.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV4;
   hadc1.Init.Resolution = ADC_RESOLUTION_12B;
-  hadc1.Init.ScanConvMode = DISABLE;
-  hadc1.Init.ContinuousConvMode = DISABLE;
+  /* Phase 2.1: 3-channel scan with TIM2 trigger @ 1kHz */
+  hadc1.Init.ScanConvMode = ENABLE;
+  hadc1.Init.ContinuousConvMode = ENABLE;
   hadc1.Init.DiscontinuousConvMode = DISABLE;
-  hadc1.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_NONE;
-  hadc1.Init.ExternalTrigConv = ADC_SOFTWARE_START;
+  hadc1.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_RISING;
+  hadc1.Init.ExternalTrigConv = ADC_EXTERNALTRIG2_T2_TRGO;
   hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
-  hadc1.Init.NbrOfConversion = 1;
-  hadc1.Init.DMAContinuousRequests = DISABLE;
+  hadc1.Init.NbrOfConversion = 3;
+  hadc1.Init.DMAContinuousRequests = ENABLE;
   hadc1.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
   if (HAL_ADC_Init(&hadc1) != HAL_OK)
   {
@@ -71,6 +73,22 @@ void MX_ADC1_Init(void)
     Error_Handler();
   }
   /* USER CODE BEGIN ADC1_Init 2 */
+
+  /* Channel 1: PB1/IN9 — bus voltage */
+  sConfig.Channel = ADC_CHANNEL_9;
+  sConfig.Rank = 2;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /* Channel 2: PA0/IN0 — NTC temperature */
+  sConfig.Channel = ADC_CHANNEL_0;
+  sConfig.Rank = 3;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
 
   /* USER CODE END ADC1_Init 2 */
 
@@ -244,6 +262,49 @@ void HAL_ADC_MspDeInit(ADC_HandleTypeDef* adcHandle)
 }
 
 /* USER CODE BEGIN 1 */
+
+/* Phase 2.1: 3-channel ADC DMA buffer (U相电流/母线电压/NTC温度, @1kHz) */
+static uint16_t s_adc_dma_buf[3];  /* [0]=CH8(current), [1]=CH9(voltage), [2]=CH0(temp) */
+
+/* Latest converted values (float, updated from DMA buffer) */
+static float s_motor_current_a;    /* U-phase current (A) */
+static float s_bus_voltage_v;      /* Bus voltage (V) */
+static float s_ntc_temp_c;         /* NTC temperature (degC) */
+static volatile bool s_adc_valid;
+
+/**
+ * HAL_ADC_ConvCpltCallback - DMA complete (3 samples ready)
+ *
+ * Called from DMA2_Stream0 IRQ. Copies the 3-channel scan result.
+ */
+void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc)
+{
+    if (hadc->Instance != ADC1)
+        return;
+
+    s_motor_current_a = (float)s_adc_dma_buf[0] * 3.3f / 4095.0f;
+    s_bus_voltage_v   = (float)s_adc_dma_buf[1] * 3.3f / 4095.0f;
+    s_ntc_temp_c      = (float)s_adc_dma_buf[2] * 3.3f / 4095.0f;
+    s_adc_valid = true;
+}
+
+/**
+ * adc_get_motor_data - Read latest ADC values (called from app_main)
+ */
+void adc_get_motor_data(float *current_a, float *voltage_v, float *temp_c)
+{
+    if (current_a) *current_a = s_motor_current_a;
+    if (voltage_v) *voltage_v = s_bus_voltage_v;
+    if (temp_c)    *temp_c    = s_ntc_temp_c;
+}
+
+int adc_start_dma(void)
+{
+    s_adc_valid = false;
+    if (HAL_ADC_Start_DMA(&hadc1, (uint32_t *)s_adc_dma_buf, 3) != HAL_OK)
+        return -1;
+    return 0;
+}
 
 /* USER CODE END 1 */
 
