@@ -1,13 +1,14 @@
 /**
  * @file app_main.c
- * @brief STM32F407 Enterprise Application V4.0 (Motor Control + PID + Fault)
+ * @brief STM32F407 Enterprise Application V4.1 (Motor+PID+Fault+SafetyIO)
  *
- * V4.0 特性:
+ * V4.1 特性:
  *   - 20Hz主循环 (50ms): PID控制 + 故障检测 + UART命令接收
- *   - 1Hz业务: DS18B20 + NTC + 协议发送 + 日志
+ *   - 1Hz慢速业务: DS18B20 + NTC + 协议发送 + 安全IO轮询 + 声光报警
  *   - PID闭环速度控制 (增量式, 积分分离, anti-windup)
  *   - 故障保护 (过流/过温/欠压/堵转, 自动停机)
  *   - ESP32 UART4远程电机控制 (启停/调速/PID/查询)
+ *   - 安全联锁: 急停+双动作恢复, 手动/自动模式隔离
  *   - GUI触屏电机控制 (Phase 1)
  */
 
@@ -22,6 +23,10 @@
 
 #include "modules.h"
 #include "protocol/protocol.h"
+#include "digital_io/digital_io.h"
+#include "alarm_service/alarm_service.h"
+#include "can_nde.h"
+#include "wdg/wdg_heartbeat.h"
 #include "../bsp/ds18b20/bsp_ds18b20.h"
 #include "../bsp/ntc/bsp_ntc.h"
 #include "../bsp/motor/bsp_motor.h"
@@ -46,6 +51,9 @@ static uint8_t g_proto_seq;
 static struct pid_state s_pid;
 static uint32_t g_ticks_since_slow = APP_SLOW_TICKS;
 static uint32_t s_last_status_ms;
+static int g_hb_slot_app = -1;
+static int g_hb_slot_tx = -1;
+static system_state_t s_last_reported_state = SYS_STATE_NORMAL;
 
 /* UART4帧接收状态机 */
 enum rx_state {
@@ -71,8 +79,11 @@ static int send_frame_to_esp32(const uint8_t *frame, int len)
 
 	status = HAL_UART_Transmit(&huart4, frame, (uint16_t)len,
 				   UART4_TX_TIMEOUT_MS);
-	if (status == HAL_OK)
+	if (status == HAL_OK) {
+		if (g_hb_slot_tx >= 0)
+			wdg_heartbeat_update(g_hb_slot_tx);
 		return len;
+	}
 
 	pr_warn_with_tag("TX", "UART4 TX failed: status=%d\n", status);
 	return -ERR_COMM_TX_FAIL;
@@ -154,6 +165,21 @@ static void execute_motor_command(uint8_t cmd, const uint8_t *data,
 	if (cmd != PROTO_CMD_MOTOR_CONTROL)
 		return;
 
+	/*
+	 * 安全联锁: EMERGENCY/WAIT_RESET 状态下忽略所有电机控制指令.
+	 * 手动模式下忽略 AI 控制指令, 电机保持当前状态.
+	 */
+	if (iso_is_estopped()) {
+		pr_warn_with_tag("MOTOR-CMD",
+			"REJECTED: E-Stop active\n");
+		return;
+	}
+	if (!iso_is_auto_mode()) {
+		pr_info_with_tag("MOTOR-CMD",
+			"REJECTED: Manual mode\n");
+		return;
+	}
+
 	if (proto_parse_motor_control(data, len, &subcmd, &value) != 0)
 		return;
 
@@ -216,6 +242,65 @@ static void poll_uart4_and_dispatch(void)
 }
 
 /*
+ * ==================== 系统状态上报 (CMD 0x07) ====================
+ */
+
+static void send_system_status(uint8_t event_source)
+{
+	uint8_t payload[8];
+	uint8_t frame[PROTO_FRAME_MAX_SIZE];
+	static uint8_t status_seq;
+	system_state_t current;
+	int frame_len;
+
+	current = iso_get_system_state();
+
+	if (current == s_last_reported_state && status_seq > 0)
+		return;
+
+	s_last_reported_state = current;
+
+	payload[0] = (uint8_t)current;
+	payload[1] = (uint8_t)iso_get_operation_mode();
+	payload[2] = (uint8_t)iso_get_safety_state();
+	payload[3] = (uint8_t)iso_get_health_level();
+	payload[4] = event_source;
+	payload[5] = 0;
+	payload[6] = 0;
+	payload[7] = 0;
+
+	frame_len = proto_build_generic_frame(frame, PROTO_CMD_SYSTEM_STATUS,
+					payload, sizeof(payload), ++status_seq);
+	if (frame_len > 0)
+		send_frame_to_esp32(frame, frame_len);
+}
+
+/* ==================== NDE CAN回调 ==================== */
+
+static void on_nde_feature_received(const float *features, uint8_t window_idx)
+{
+	uint8_t frame[PROTO_FRAME_MAX_SIZE];
+	static uint8_t nde_seq;
+
+	int len = proto_build_nde_feature_frame(frame, features, window_idx,
+						++nde_seq);
+	if (len > 0)
+		send_frame_to_esp32(frame, len);
+}
+
+static void on_nde_heartbeat_received(uint8_t online, uint8_t errors,
+				      int8_t temp_c)
+{
+	uint8_t frame[PROTO_FRAME_MAX_SIZE];
+	static uint8_t hb_seq;
+
+	int len = proto_build_nde_heartbeat_frame(frame, online, errors,
+						  temp_c, 0, ++hb_seq);
+	if (len > 0)
+		send_frame_to_esp32(frame, len);
+}
+
+/*
  * ==================== 主循环 ====================
  */
 
@@ -229,12 +314,16 @@ static void main_loop_enterprise(void)
 	g_loop_count++;
 	g_ticks_since_slow++;
 
+	/* Heartbeat: app_enterprise still alive */
+	if (g_hb_slot_app >= 0)
+		wdg_heartbeat_update(g_hb_slot_app);
+
 	/*
 	 * 1Hz慢速业务 (每20 tick = 1000ms)
 	 */
 	if (g_ticks_since_slow >= APP_SLOW_TICKS) {
 		float temp_c, humidity_rh;
-		int temp_result, tx_result;
+		int temp_result;
 		int temp_int, temp_frac;
 
 		/*
@@ -298,6 +387,22 @@ static void main_loop_enterprise(void)
 			}
 		}
 
+		/*
+		 * 安全IO轮询 (1Hz)
+		 */
+		iso_input_poll();
+		iso_check_estop_release();
+		iso_input_process_events();
+
+		/* 声光报警刷新 */
+		alarm_service_refresh();
+
+		/* 系统状态上报 */
+		send_system_status(0);
+
+		/* CAN NDE批次超时检测 */
+		can_nde_poll_timeout();
+
 		g_ticks_since_slow = 0;
 	}
 
@@ -340,7 +445,7 @@ static void main_loop_enterprise(void)
 	bsp_motor_fault_check(duty, rpm, cur_ma, bus_mv, temp_dc,
 		is_running);
 
-	/* Step F: UART4命令接收 (ESP32 → STM32) */
+	/* Step F: UART4命令接收 (ESP32 → STM32, 含安全联锁) */
 	poll_uart4_and_dispatch();
 
 	/* Step G: 电机状态上报 (STM32 → ESP32, 每2s) */
@@ -398,8 +503,31 @@ void app_dht11_task_entry(void *argument)
 	(void)argument;
 
 	pr_info_with_tag("APP", "========================================\n");
-	pr_info_with_tag("APP", " Enterprise Task V4.0 (Motor+PID+Fault)\n");
+	pr_info_with_tag("APP", " Enterprise Task V4.1 (Motor+PID+Fault+SafetyIO)\n");
 	pr_info_with_tag("APP", "========================================\n\n");
+
+	/*
+	 * 启动安全序列 (严格顺序 — 安全critical):
+	 *   1. digital_io_init() — 先读IN1物理状态 → 决定上电安全状态
+	 *   2. alarm_service_init() — LED/蜂鸣器初始化, 显示初始状态
+	 *   3. 硬件传感器初始化
+	 *   4. PID + 电机
+	 */
+
+	/* 步骤1: 隔离输入初始化 (读IN1急停状态, Fail-Safe启动) */
+	if (digital_io_init() == 0) {
+		pr_info_with_tag("APP",
+			"Digital IO initialized (12-ch isolated input)\n");
+	} else {
+		pr_error_with_tag("APP", "Digital IO init failed\n");
+	}
+
+	/* 步骤2: 声光报警服务初始化 */
+	if (alarm_service_init() == 0) {
+		pr_info_with_tag("APP", "Alarm service initialized\n");
+	} else {
+		pr_error_with_tag("APP", "Alarm service init failed\n");
+	}
 
 	/*
 	 * 初始化DS18B20传感器
@@ -423,6 +551,17 @@ void app_dht11_task_entry(void *argument)
 		}
 	}
 
+	/* Register heartbeats with wdg_daemon */
+	g_hb_slot_app = wdg_heartbeat_register("app_enterprise", 3000,
+					       NULL, true);
+	g_hb_slot_tx  = wdg_heartbeat_register("uart4_tx", 5000,
+					       NULL, true);
+
+	/* Register NDE CAN callbacks */
+	can_nde_set_callbacks(on_nde_feature_received,
+			      on_nde_heartbeat_received);
+	pr_info_with_tag("APP", "NDE CAN callbacks registered\n");
+
 	/*
 	 * 初始化PID速度控制器 (默认参数)
 	 */
@@ -441,6 +580,13 @@ void app_dht11_task_entry(void *argument)
 			(long)s_pid.cfg.integral_max);
 	}
 
+	/*
+	 * 主循环 (20Hz = 50ms)
+	 *
+	 * 循环顺序 (安全关键):
+	 *   每50ms: PID + 故障检测 + UART RX + 电机状态上报 + GUI
+	 *   每1s (20 ticks): DS18B20 + NTC + 安全IO + 声光报警 + NDE CAN
+	 */
 	while (1) {
 		main_loop_enterprise();
 		osDelay(APP_UPDATE_INTERVAL_MS);
