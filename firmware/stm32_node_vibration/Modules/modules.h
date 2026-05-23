@@ -14,7 +14,10 @@
  *   - crc: CRC 校验工具 (CRC8/16/32)
  *   - timestamp: 时间戳与延时工具
  *   - system_log: 日志系统
+ *   - digital_io: 12路隔离输入 (NC/NO语义反转 + 安全状态机)
+ *   - alarm_service: 声光报警 (4路隔离输出 + 蜂鸣器 + 板载LED)
  *   - protocol: UART 通信协议（与 ESP32 对接）
+ *   - wdg: 看门狗心跳守护
  */
 
 #ifndef __MODULES_H
@@ -33,6 +36,17 @@
 
 #include "system_log/system_log.h"
 
+/* ==================== 隔离输入输出模块 ==================== */
+
+#include "digital_io/digital_io.h"
+#include "alarm_service/alarm_service.h"
+
 /* ==================== 通信协议模块 ==================== */
+
+#include "protocol/protocol.h"
+
+/* ==================== 看门狗模块 ==================== */
+
+#include "wdg/wdg_heartbeat.h"
 
 #endif /* __MODULES_H */

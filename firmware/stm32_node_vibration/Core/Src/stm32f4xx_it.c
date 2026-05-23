@@ -68,6 +68,7 @@ extern ETH_HandleTypeDef heth;
 extern DMA_HandleTypeDef hdma_adc1;
 extern I2C_HandleTypeDef hi2c2;
 extern DMA_HandleTypeDef hdma_spi2_tx;
+extern DMA_HandleTypeDef hdma_uart4_tx;
 extern DMA_HandleTypeDef hdma_spi2_rx;
 extern SPI_HandleTypeDef hspi2;
 extern TIM_HandleTypeDef htim1;
@@ -279,7 +280,8 @@ void DMA1_Stream4_IRQHandler(void)
   /* USER CODE BEGIN DMA1_Stream4_IRQn 0 */
 
   /* USER CODE END DMA1_Stream4_IRQn 0 */
-  HAL_DMA_IRQHandler(&hdma_spi2_tx);
+  /* DMA1_Stream4: UART4 TX DMA (re-claimed from SPI2_TX by uart4_dma_tx_init) */
+  HAL_DMA_IRQHandler(&hdma_uart4_tx);
   /* USER CODE BEGIN DMA1_Stream4_IRQn 1 */
 
   /* USER CODE END DMA1_Stream4_IRQn 1 */
@@ -440,5 +442,27 @@ void ETH_IRQHandler(void)
 }
 
 /* USER CODE BEGIN 1 */
+
+/**
+ * @brief EXTI3 IRQ Handler — IN1 急停 (PG3, 下降沿)
+ *
+ * 由 digital_io_exti.c 配置 (CubeMX 未生成 EXTI3).
+ * 调用 HAL GPIO EXTI 回调分发至 HAL_GPIO_EXTI_Callback.
+ */
+void EXTI3_IRQHandler(void)
+{
+        HAL_GPIO_EXTI_IRQHandler(GPIO_PIN_3);
+}
+
+/**
+ * @brief EXTI9_5 IRQ Handler — IN3 报警复位 (PG5, 上升沿)
+ *
+ * 共享 EXTI 线 5-9.
+ * 由 digital_io_exti.c 配置 (CubeMX 未生成 EXTI9_5).
+ */
+void EXTI9_5_IRQHandler(void)
+{
+        HAL_GPIO_EXTI_IRQHandler(GPIO_PIN_5);
+}
 
 /* USER CODE END 1 */

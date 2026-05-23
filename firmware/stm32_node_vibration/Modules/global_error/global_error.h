@@ -84,6 +84,23 @@
 #define ERR_DHT11_BUS_BUSY              -411
 
 /*
+ * NTC 温度传感器错误 (-412 ~ -419)
+ */
+#define ERR_NTC_TIMEOUT                 -412
+#define ERR_NTC_OUT_OF_RANGE            -413
+#define ERR_NTC_NOT_INIT                -414
+#define ERR_NTC_INVALID_PARAM           -415
+
+/*
+ * DS18B20 数字温度传感器错误 (-416 ~ -425)
+ */
+#define ERR_DS18B20_TIMEOUT             -416
+#define ERR_DS18B20_NO_RESPONSE         -417
+#define ERR_DS18B20_BUS_STUCK           -418
+#define ERR_DS18B20_NOT_INIT            -419
+#define ERR_DS18B20_INVALID_PARAM       -420
+
+/*
  * 电机控制错误 (-500 ~ -599)
  * PWM/电机驱动相关错误
  */
@@ -116,6 +133,24 @@
 #define ERR_RTOS_QUEUE_CREATE_FAIL      -801
 #define ERR_RTOS_MUTEX_CREATE_FAIL      -802
 #define ERR_RTOS_SEM_CREATE_FAIL        -803
+
+/*
+ * 数字IO错误 (-420 ~ -439)
+ * 隔离输入/输出模块相关错误
+ */
+#define ERR_DIGITAL_IO_INIT_FAIL        -420
+#define ERR_DIGITAL_IO_NOT_INIT         -421
+#define ERR_DIGITAL_IO_INVALID_CH       -422
+#define ERR_DIGITAL_IO_EXTI_FAIL        -423
+#define ERR_DIGITAL_IO_ESTOP_ACTIVE     -424
+
+/*
+ * 报警服务错误 (-440 ~ -459)
+ * LED/蜂鸣器/继电器相关错误
+ */
+#define ERR_ALARM_INIT_FAIL             -440
+#define ERR_ALARM_NOT_INIT              -441
+#define ERR_ALARM_INVALID_OUT           -442
 
 /*
  * 协议栈错误 (-900 ~ -999)
@@ -177,8 +212,10 @@ struct error_manager {
 #define MODULE_ID_COMM                  6
 #define MODULE_ID_FS                    7
 #define MODULE_ID_RTOS                  8
+#define MODULE_ID_DIGITAL_IO            10
+#define MODULE_ID_ALARM                 11
 #define MODULE_ID_APP                   9
-#define MODULE_ID_MAX                   10
+#define MODULE_ID_MAX                   12
 
 /* ==================== 生命周期 API ==================== */
 
