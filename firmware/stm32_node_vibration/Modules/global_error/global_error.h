@@ -84,21 +84,46 @@
 #define ERR_DHT11_BUS_BUSY              -411
 
 /*
- * NTC 温度传感器错误 (-412 ~ -419)
+ * NTC 热敏电阻传感器错误 (-420 ~ -439)
+ * NTC ADC采集与温度转换专用错误码
  */
-#define ERR_NTC_TIMEOUT                 -412
-#define ERR_NTC_OUT_OF_RANGE            -413
-#define ERR_NTC_NOT_INIT                -414
-#define ERR_NTC_INVALID_PARAM           -415
+#define ERR_NTC_INIT_FAIL               -420
+#define ERR_NTC_NOT_INIT                -421
+#define ERR_NTC_INVALID_PARAM           -422
+#define ERR_NTC_TIMEOUT                 -423
+#define ERR_NTC_ADC_ERROR               -424
+#define ERR_NTC_OUT_OF_RANGE            -425
 
 /*
- * DS18B20 数字温度传感器错误 (-416 ~ -425)
+ * DS18B20 数字温度传感器错误 (-440 ~ -459)
+ * DS18B20 1-Wire通信专用错误码
  */
-#define ERR_DS18B20_TIMEOUT             -416
-#define ERR_DS18B20_NO_RESPONSE         -417
-#define ERR_DS18B20_BUS_STUCK           -418
-#define ERR_DS18B20_NOT_INIT            -419
-#define ERR_DS18B20_INVALID_PARAM       -420
+#define ERR_DS18B20_INIT_FAIL           -440
+#define ERR_DS18B20_NOT_INIT            -441
+#define ERR_DS18B20_INVALID_PARAM       -442
+#define ERR_DS18B20_TIMEOUT             -443
+#define ERR_DS18B20_NO_RESPONSE         -444
+#define ERR_DS18B20_CRC_ERROR           -445
+#define ERR_DS18B20_BUS_STUCK           -446
+#define ERR_DS18B20_READ_FAIL           -447
+
+/*
+ * 数字IO错误 (-460 ~ -479)
+ * 隔离输入/输出模块相关错误
+ */
+#define ERR_DIGITAL_IO_INIT_FAIL        -460
+#define ERR_DIGITAL_IO_NOT_INIT         -461
+#define ERR_DIGITAL_IO_INVALID_CH       -462
+#define ERR_DIGITAL_IO_EXTI_FAIL        -463
+#define ERR_DIGITAL_IO_ESTOP_ACTIVE     -464
+
+/*
+ * 报警服务错误 (-480 ~ -499)
+ * LED/蜂鸣器/继电器相关错误
+ */
+#define ERR_ALARM_INIT_FAIL             -480
+#define ERR_ALARM_NOT_INIT              -481
+#define ERR_ALARM_INVALID_OUT           -482
 
 /*
  * 电机控制错误 (-500 ~ -599)
@@ -135,24 +160,6 @@
 #define ERR_RTOS_SEM_CREATE_FAIL        -803
 
 /*
- * 数字IO错误 (-420 ~ -439)
- * 隔离输入/输出模块相关错误
- */
-#define ERR_DIGITAL_IO_INIT_FAIL        -420
-#define ERR_DIGITAL_IO_NOT_INIT         -421
-#define ERR_DIGITAL_IO_INVALID_CH       -422
-#define ERR_DIGITAL_IO_EXTI_FAIL        -423
-#define ERR_DIGITAL_IO_ESTOP_ACTIVE     -424
-
-/*
- * 报警服务错误 (-440 ~ -459)
- * LED/蜂鸣器/继电器相关错误
- */
-#define ERR_ALARM_INIT_FAIL             -440
-#define ERR_ALARM_NOT_INIT              -441
-#define ERR_ALARM_INVALID_OUT           -442
-
-/*
  * 协议栈错误 (-900 ~ -999)
  * UART通信协议相关错误
  */
@@ -166,6 +173,87 @@
 #define ERR_PROTO_NO_DATA               -907
 #define ERR_PROTO_BATCH_OVERFLOW        -908
 #define ERR_PROTO_CALLBACK_FULL         -909
+
+/*
+ * LCD 显示错误 (-1000 ~ -1099)
+ * FSMC/LVGL/ILI9341 显示相关错误
+ */
+#define ERR_LCD_INIT_FAIL               -1000
+#define ERR_LCD_NOT_INIT                -1001
+#define ERR_LCD_INVALID_PARAM           -1002
+#define ERR_LCD_BUS_BUSY                -1003
+#define ERR_LCD_FLUSH_FAIL              -1004
+#define ERR_LCD_BACKLIGHT_FAIL          -1005
+
+/*
+ * GUI 界面错误 (-1100 ~ -1199)
+ * LVGL UI 应用层错误
+ */
+#define ERR_GUI_INIT_FAIL               -1100
+#define ERR_GUI_CREATE_SCREEN_FAIL      -1101
+#define ERR_GUI_INVALID_MODULE          -1102
+#define ERR_GUI_RESOURCE_FAIL           -1103
+
+/*
+ * EEPROM 存储错误 (-1200 ~ -1299)
+ * AT24Cxx 等 I2C EEPROM 错误
+ */
+#define ERR_EEPROM_INIT_FAIL            -1200
+#define ERR_EEPROM_NOT_INIT             -1201
+#define ERR_EEPROM_WRITE_FAIL           -1202
+#define ERR_EEPROM_READ_FAIL            -1203
+#define ERR_EEPROM_INVALID_ADDR         -1204
+#define ERR_EEPROM_BUS_BUSY             -1205
+
+/*
+ * Flash 存储错误 (-1300 ~ -1399)
+ * STM32 内部 Flash 操作错误
+ */
+#define ERR_FLASH_INIT_FAIL             -1300
+#define ERR_FLASH_ERASE_FAIL            -1301
+#define ERR_FLASH_WRITE_FAIL            -1302
+#define ERR_FLASH_READ_FAIL             -1303
+#define ERR_FLASH_INVALID_ADDR          -1304
+#define ERR_FLASH_LOCKED                -1305
+
+/*
+ * 数据验证错误 (-1400 ~ -1499)
+ * 传感器数据合理性校验错误
+ */
+#define ERR_DATA_OUT_OF_RANGE           -1400
+#define ERR_DATA_STALE                  -1401
+#define ERR_DATA_CHECKSUM_FAIL          -1402
+#define ERR_DATA_NOISE_THRESHOLD        -1403
+#define ERR_DATA_INVALID_FORMAT         -1404
+
+/*
+ * 振动分析错误 (-1500 ~ -1599)
+ * FFT/频谱分析相关错误
+ */
+#define ERR_VIB_INIT_FAIL               -1500
+#define ERR_VIB_NOT_INIT                -1501
+#define ERR_VIB_BUFFER_OVERFLOW         -1502
+#define ERR_VIB_INVALID_FREQ            -1503
+#define ERR_VIB_FFT_FAIL                -1504
+#define ERR_VIB_NO_DATA                 -1505
+
+/*
+ * 模拟传感器错误 (-1600 ~ -1699)
+ * 软件模拟传感器错误
+ */
+#define ERR_SIM_INIT_FAIL               -1600
+#define ERR_SIM_NOT_INIT                -1601
+#define ERR_SIM_DATA_BOUNDARY           -1602
+#define ERR_SIM_INVALID_PARAM           -1603
+
+/*
+ * 系统配置错误 (-1700 ~ -1799)
+ * 系统级配置和初始化错误
+ */
+#define ERR_SYS_CLOCK_CONFIG_FAIL       -1700
+#define ERR_SYS_PERIPH_INIT_FAIL        -1701
+#define ERR_SYS_WATCHDOG_FAIL           -1702
+#define ERR_SYS_BROWNOUT_DETECTED       -1703
 
 /* ==================== 错误状态管理 ==================== */
 
@@ -212,130 +300,57 @@ struct error_manager {
 #define MODULE_ID_COMM                  6
 #define MODULE_ID_FS                    7
 #define MODULE_ID_RTOS                  8
-#define MODULE_ID_DIGITAL_IO            10
-#define MODULE_ID_ALARM                 11
 #define MODULE_ID_APP                   9
-#define MODULE_ID_MAX                   12
+#define MODULE_ID_LCD                   10
+#define MODULE_ID_GUI                   11
+#define MODULE_ID_EEPROM                12
+#define MODULE_ID_FLASH                 13
+#define MODULE_ID_DATA_VALID            14
+#define MODULE_ID_VIBRATION             15
+#define MODULE_ID_SIMULATOR             16
+#define MODULE_ID_SYSTEM                17
+#define MODULE_ID_PROTOCOL              18
+#define MODULE_ID_DIGITAL_IO            20
+#define MODULE_ID_ALARM                 21
+#define MODULE_ID_MAX                   22
 
 /* ==================== 生命周期 API ==================== */
 
-/**
- * error_manager_init - 初始化错误管理器
- * @mgr: 错误管理器指针
- * @record_buf: 外部提供的记录缓冲区
- * @max_records: 最大记录数量
- *
- * Return: ERR_OK 成功, 负数错误码
- */
 int error_manager_init(struct error_manager *mgr,
                        struct error_record *record_buf,
                        uint16_t max_records);
 
-/**
- * error_manager_deinit - 反初始化错误管理器
- * @mgr: 错误管理器指针
- */
 void error_manager_deinit(struct error_manager *mgr);
 
 /* ==================== 错误操作 API ==================== */
 
-/**
- * error_manager_set - 记录一个错误
- * @mgr: 错误管理器指针
- * @code: 错误码
- * @module_id: 模块 ID
- *
- * 将错误码记录到管理器中，并更新最后错误状态。
- *
- * Return: ERR_OK 成功, 负数错误码
- */
 int error_manager_set(struct error_manager *mgr, int code,
                       uint8_t module_id);
 
-/**
- * error_manager_clear - 清除指定错误码的所有记录
- * @mgr: 错误管理器指针
- * @code: 要清除的错误码
- *
- * 标记该错误码的所有记录为已清除状态。
- *
- * Return: 被清除的记录数, -1 表示参数错误
- */
 int error_manager_clear(struct error_manager *mgr, int code);
 
-/**
- * error_manager_clear_all - 清除所有错误记录
- * @mgr: 错误管理器指针
- *
- * Return: 被清除的记录总数
- */
 int error_manager_clear_all(struct error_manager *mgr);
 
 /* ==================== 错误查询 API ==================== */
 
-/**
- * error_manager_check - 检查指定错误是否活跃
- * @mgr: 错误管理器指针
- * @code: 要检查的错误码
- *
- * Return: true 存在未清除的该错误, false 不存在
- */
 bool error_manager_check(const struct error_manager *mgr, int code);
 
-/**
- * error_manager_get_last - 获取最近一次错误码
- * @mgr: 错误管理器指针
- *
- * Return: 最后一次错误码, ERR_OK 表示无错误
- */
 int error_manager_get_last(const struct error_manager *mgr);
 
-/**
- * error_manager_get_active_count - 获取活跃错误数量
- * @mgr: 错误管理器指针
- *
- * Return: 未清除的错误记录数
- */
 uint16_t error_manager_get_active_count(const struct error_manager *mgr);
 
-/**
- * error_manager_has_error - 检查是否存在任何活跃错误
- * @mgr: 错误管理器指针
- *
- * Return: true 存在活跃错误, false 无错误
- */
 bool error_manager_has_error(const struct error_manager *mgr);
 
 /* ==================== 错误信息 API ==================== */
 
-/**
- * error_get_string - 获取错误码对应的描述字符串
- * @code: 错误码
- *
- * Return: 错误描述字符串指针
- */
 const char *error_get_string(int code);
 
-/**
- * error_manager_get_record - 获取指定索引的错误记录
- * @mgr: 错误管理器指针
- * @index: 记录索引 (0 ~ count-1)
- * @record: 输出记录结构体
- *
- * Return: ERR_OK 成功, 负数错误码
- */
 int error_manager_get_record(const struct error_manager *mgr,
                              uint16_t index,
                              struct error_record *record);
 
 /* ==================== 时间戳配置 API ==================== */
 
-/**
- * error_set_time_callback - 设置时间戳回调函数
- * @cb: 返回当前时间戳 (ms) 的函数指针
- *
- * 允许上层设置自定义的时间戳源（如 HAL_GetTick()）。
- */
 void error_set_time_callback(uint32_t (*cb)(void));
 
 #endif /* __GLOBAL_ERROR_H */

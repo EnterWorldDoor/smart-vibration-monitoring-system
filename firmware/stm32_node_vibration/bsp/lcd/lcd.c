@@ -1,19 +1,16 @@
 /**
  * @file lcd.c
- * @brief ATK-DMF407 LCD驱动实现 (ILI9341, FSMC 16-bit)
+ * @brief ATK-DMF407 LCD驱动实现 (ILI9341 / ST7789V 自动检测, FSMC 16-bit)
  *
  * 驱动架构:
  *   - FSMC并行接口: 16位数据总线, Bank4
- *   - ILI9341命令集: 寄存器配置+显存写入
+ *   - 自动检测LCD控制器型号 (ILI9341 vs ST7789V)
+ *   - 对应控制器初始化序列
  *   - LVGL集成: 提供flush回调接口
- *
- * 性能优化:
- *   - 窗口寻址模式: 减少坐标设置开销
- *   - 批量数据传输: 连续写像素，提高吞吐量
- *   - FSMC时序调优: DataSetupTime=255 (保守值)
  */
 
 #include "lcd.h"
+#include "../../lvgl.h"
 #include "fsmc.h"
 #include "gpio.h"
 #include "system_log/system_log.h"
@@ -53,38 +50,76 @@
 #define ILI9341_CMD_DRIVER_TIMING_A     0xE8
 #define ILI9341_CMD_DRIVER_TIMING_B     0xEA
 
+/* ==================== ST7789V寄存器定义 ==================== */
+
+/* ST7789V通用命令 (与ILI9341兼容) */
+#define ST7789_CMD_NOP                  0x00
+#define ST7789_CMD_SOFT_RESET           0x01
+#define ST7789_CMD_READ_ID              0x04    /* 读ID (不同于ILI9341的0xD3!) */
+#define ST7789_CMD_SLEEP_OUT            0x11
+#define ST7789_CMD_DISPLAY_ON           0x29
+#define ST7789_CMD_COLUMN_ADDR_SET      0x2A    /* CASET */
+#define ST7789_CMD_ROW_ADDR_SET         0x2B    /* PASET */
+#define ST7789_CMD_MEMORY_WRITE         0x2C    /* RAMWR */
+#define ST7789_CMD_MADCTL               0x36    /* 内存访问控制 */
+#define ST7789_CMD_PIXEL_FORMAT_SET     0x3A    /* COLMOD */
+
+/* ST7789V专用寄存器 */
+#define ST7789_CMD_PORCH_CTRL           0xB2    /* 前后廊控制 */
+#define ST7789_CMD_GATE_CTRL            0xB7    /* 栅极控制 */
+#define ST7789_CMD_VCOM_SET             0xBB    /* VCOM设置 */
+#define ST7789_CMD_LCM_CTRL             0xC0    /* LCM控制 */
+#define ST7789_CMD_VDV_VRH_EN           0xC2    /* VDV/VRH使能 */
+#define ST7789_CMD_VRH_SET              0xC3    /* VRH设置 */
+#define ST7789_CMD_VDV_SET              0xC4    /* VDV设置 */
+#define ST7789_CMD_FRAME_RATE_CTRL      0xC6    /* 帧率控制 */
+#define ST7789_CMD_POWER_CTRL1          0xD0    /* 电源控制1 */
+#define ST7789_CMD_POSITIVE_GAMMA       0xE0    /* 正伽马校正 */
+#define ST7789_CMD_NEGATIVE_GAMMA       0xE1    /* 负伽马校正 */
+#define ST7789_CMD_INVERSION_ON         0x21    /* 显示反相开 */
+
+/* ==================== 控制器类型 ==================== */
+
+enum lcd_controller {
+        LCD_CTRL_UNKNOWN = 0,
+        LCD_CTRL_ILI9341,
+        LCD_CTRL_ST7789V
+};
+
 /* ==================== 模块内部状态 ==================== */
 
 static struct {
         uint16_t current_width;
         uint16_t current_height;
         enum lcd_orientation orientation;
+        enum lcd_controller controller;
         bool initialized;
 } lcd_state = {
         .current_width = LCD_WIDTH,
         .current_height = LCD_HEIGHT,
         .orientation = LCD_ORIENTATION_LANDSCAPE,
+        .controller = LCD_CTRL_UNKNOWN,
         .initialized = false
 };
 
 /* ==================== 底层硬件操作 ==================== */
 
 /**
- * lcd_write_cmd - 通过FSMC发送ILI9341命令
- * @cmd: 命令字节
+ * lcd_write_cmd - 通过FSMC发送ILI9341命令字节
+ * @cmd: 命令操作码 (ILI9341寄存器索引)
  *
- * FSMC地址线A10=1表示命令周期
+ * RS=0 (A10=0): 写入ILI9341索引寄存器
  */
 static inline void lcd_write_cmd(uint8_t cmd)
 {
-        LCD_FSMC_CMD_ADDR = cmd;
+        LCD_FSMC_CMD_ADDR = (uint16_t)cmd;
 }
 
 /**
- * lcd_write_data - 通过FSMC发送ILI9341数据
- * @data: 16位数据 (RGB565)
+ * lcd_write_data - 通过FSMC发送ILI9341数据 (16-bit)
+ * @data: 16位数据 (RGB565像素值)
  *
- * FSMC地址线A10=0表示数据周期
+ * RS=1 (A10=1): 写入ILI9341控制寄存器/GRAM
  */
 static inline void lcd_write_data(uint16_t data)
 {
@@ -93,11 +128,13 @@ static inline void lcd_write_data(uint16_t data)
 
 /**
  * lcd_write_data8 - 发送8位数据 (用于初始化参数)
- * @data: 8位数据
+ * @data: 8位参数数据
+ *
+ * RS=1 (A10=1): 写入ILI9341控制寄存器
  */
 static inline void lcd_write_data8(uint8_t data)
 {
-        LCD_FSMC_DATA_ADDR = data;
+        LCD_FSMC_DATA_ADDR = (uint16_t)data;
 }
 
 /**
@@ -111,6 +148,21 @@ static inline uint16_t lcd_read_data(void)
 }
 
 /* ==================== ILI9341初始化序列 ==================== */
+
+/*
+ * NOP-based delay for use before FreeRTOS scheduler starts.
+ *
+ * At 168MHz, the loop (NOP + SUBS + BNE) takes ~4 cycles = ~24ns.
+ * 1ms = 1,000,000ns / 24ns ≈ 41,667 iterations.
+ * Using 42,000 for safe margin (accounts for compiler -O2/-Os variations).
+ */
+static inline void lcd_delay_ms(uint32_t ms)
+{
+        volatile uint32_t count = ms * 42000;
+        while (count--) {
+                __NOP();
+        }
+}
 
 /**
  * ili9341_init_sequence - ILI9341标准初始化流程
@@ -129,20 +181,25 @@ static inline uint16_t lcd_read_data(void)
  */
 static void ili9341_init_sequence(void)
 {
-        HAL_Delay(100);  /* 等待LCD上电稳定 */
+        /*
+         * 硬件复位: LCD RST引脚连接至MCU NRST (复位按钮)
+         * MCU复位时LCD同步复位，无需软件控制GPIO。
+         * PG15实际为DS18B20 1-Wire数据线，不可在此操作。
+         */
+        lcd_delay_ms(120);  /* 等待LCD内部电源和振荡器稳定 */
 
-        /* Step 1: 软复位 */
+        /* Step 1: 软复位 (确保寄存器回到默认值) */
         lcd_write_cmd(ILI9341_CMD_SOFT_RESET);
-        HAL_Delay(50);
+        lcd_delay_ms(50);
 
         /* Step 2: 退出睡眠模式 */
         lcd_write_cmd(0x11);  /* SLPOUT */
-        HAL_Delay(120);
+        lcd_delay_ms(120);
 
         /* Step 3: 像素格式设置 - RGB565 (16位/像素) */
         lcd_write_cmd(ILI9341_CMD_PIXEL_FORMAT_SET);
         lcd_write_data8(0x55);  /* 16-bit/pixel */
-        HAL_Delay(10);
+        lcd_delay_ms(10);
 
         /* Step 4: 内存访问控制 (MADCTL) */
         /*
@@ -154,8 +211,8 @@ static void ili9341_init_sequence(void)
          * Bit[2]: MH  (水平刷新顺序) 0=自左而右
          */
         lcd_write_cmd(ILI9341_CMD_MADCTL);
-        lcd_write_data8(0x08);  /* BGR模式 */
-        HAL_Delay(10);
+        lcd_write_data8(0x00);  /* BGR=0, 配合LV_COLOR_16_SWAP */
+        lcd_delay_ms(10);
 
         /* Step 5: 帧率控制 (Framerate) */
         lcd_write_cmd(ILI9341_CMD_FRAME_RATE_CTRL);
@@ -249,49 +306,285 @@ static void ili9341_init_sequence(void)
 
         /* Step 9: 开启显示 */
         lcd_write_cmd(ILI9341_CMD_DISPLAY_ON);
-        HAL_Delay(10);
+        lcd_delay_ms(10);
 
         pr_info_with_tag("LCD", "ILI9341 initialization sequence completed\n");
+}
+
+/**
+ * st7789v_init_sequence - ST7789V标准初始化流程
+ *
+ * 与ILI9341的主要差异:
+ *   - ID读取命令: 0x04 vs 0xD3
+ *   - 栅极/廊/VCOM控制: 不同的寄存器映射
+ *   - Gamma校正: 14组参数 vs 15组
+ *   - 电源管理: 简化的LCM+VDV控制
+ *   - 需要开启显示反相 (INVON)
+ *
+ * 参考: Sitronix ST7789V2 datasheet v1.0
+ */
+static void st7789v_init_sequence(void)
+{
+        /* 供电稳定延时 */
+        lcd_delay_ms(5);
+
+        /* Step 1: 软件复位 */
+        lcd_write_cmd(ST7789_CMD_SOFT_RESET);
+        lcd_delay_ms(150);
+
+        /* Step 2: 退出睡眠模式 */
+        lcd_write_cmd(ST7789_CMD_SLEEP_OUT);
+        lcd_delay_ms(120);
+
+        /* Step 3: 像素格式设置 - RGB565 */
+        lcd_write_cmd(ST7789_CMD_PIXEL_FORMAT_SET);
+        lcd_write_data8(0x55);  /* 16-bit/pixel */
+        lcd_delay_ms(10);
+
+        /* Step 4: MADCTL (内存访问控制, 初始值, 稍后由set_orientation覆盖) */
+        lcd_write_cmd(ST7789_CMD_MADCTL);
+        lcd_write_data8(0x00);
+        lcd_delay_ms(10);
+
+        /* Step 5: 前后廊控制 (Porch Control) */
+        lcd_write_cmd(ST7789_CMD_PORCH_CTRL);
+        lcd_write_data8(0x0C);  /* 正常模式前廊 */
+        lcd_write_data8(0x0C);  /* 正常模式后廊 */
+        lcd_write_data8(0x00);  /* 空闲模式前廊 */
+        lcd_write_data8(0x33);  /* 空闲模式后廊 */
+        lcd_write_data8(0x33);  /* 部分模式后廊 */
+
+        /* Step 6: 栅极控制 (Gate Control) */
+        lcd_write_cmd(ST7789_CMD_GATE_CTRL);
+        lcd_write_data8(0x35);  /* VGH=13.26V, VGL=-10.43V */
+
+        /* Step 7: VCOM设置 */
+        lcd_write_cmd(ST7789_CMD_VCOM_SET);
+        lcd_write_data8(0x2B);  /* VCOM=0.725V */
+
+        /* Step 8: LCM控制 (Power Control) */
+        lcd_write_cmd(ST7789_CMD_LCM_CTRL);
+        lcd_write_data8(0x2C);  /* AVDD=6.8V, AVCL=-4.8V */
+
+        /* Step 9: VDV/VRH使能 */
+        lcd_write_cmd(ST7789_CMD_VDV_VRH_EN);
+        lcd_write_data8(0x01);  /* VDV使能 */
+        lcd_write_data8(0xFF);  /* VRH=5.2V */
+
+        /* Step 10: VRH设置 */
+        lcd_write_cmd(ST7789_CMD_VRH_SET);
+        lcd_write_data8(0x11);
+
+        /* Step 11: VDV设置 */
+        lcd_write_cmd(ST7789_CMD_VDV_SET);
+        lcd_write_data8(0x20);
+
+        /* Step 12: 帧率控制 - 60Hz */
+        lcd_write_cmd(ST7789_CMD_FRAME_RATE_CTRL);
+        lcd_write_data8(0x0F);
+
+        /* Step 13: 正伽马校正 (14组参数) */
+        lcd_write_cmd(ST7789_CMD_POSITIVE_GAMMA);
+        lcd_write_data8(0xD0); lcd_write_data8(0x00); lcd_write_data8(0x05);
+        lcd_write_data8(0x0E); lcd_write_data8(0x15); lcd_write_data8(0x0D);
+        lcd_write_data8(0x37); lcd_write_data8(0x43); lcd_write_data8(0x47);
+        lcd_write_data8(0x09); lcd_write_data8(0x15); lcd_write_data8(0x12);
+        lcd_write_data8(0x16); lcd_write_data8(0x19);
+
+        /* Step 14: 负伽马校正 (14组参数) */
+        lcd_write_cmd(ST7789_CMD_NEGATIVE_GAMMA);
+        lcd_write_data8(0xD0); lcd_write_data8(0x00); lcd_write_data8(0x05);
+        lcd_write_data8(0x0D); lcd_write_data8(0x0C); lcd_write_data8(0x06);
+        lcd_write_data8(0x2D); lcd_write_data8(0x44); lcd_write_data8(0x40);
+        lcd_write_data8(0x0E); lcd_write_data8(0x1C); lcd_write_data8(0x18);
+        lcd_write_data8(0x16); lcd_write_data8(0x19);
+
+        /* Step 15: 显示反相开启 */
+        lcd_write_cmd(ST7789_CMD_INVERSION_ON);
+
+        /* Step 16: 开启显示 */
+        lcd_write_cmd(ST7789_CMD_DISPLAY_ON);
+        lcd_delay_ms(20);
+
+        pr_info_with_tag("LCD", "ST7789V initialization sequence completed\n");
+}
+
+/* ==================== LCD控制器ID读取 ==================== */
+
+/**
+ * bsp_lcd_read_ili9341_id - 读取ILI9341控制器ID (命令 0xD3)
+ *
+ * Return: 24-bit ID, 读取失败返回0
+ */
+static uint32_t bsp_lcd_read_ili9341_id(void)
+{
+        uint8_t id[3] = {0};
+
+        lcd_write_cmd(ILI9341_CMD_READ_ID4);
+
+        (void)(lcd_read_data() & 0xFF);                 /* Dummy */
+        id[0] = (uint8_t)(lcd_read_data() & 0xFF);      /* Manufacturer */
+        id[1] = (uint8_t)(lcd_read_data() & 0xFF);      /* Version */
+        id[2] = (uint8_t)(lcd_read_data() & 0xFF);      /* Module/Driver */
+
+        return ((uint32_t)id[0] << 16) | ((uint32_t)id[1] << 8) | id[2];
+}
+
+/**
+ * bsp_lcd_read_st7789_id - 读取ST7789V控制器ID (命令 0x04)
+ *
+ * ST7789V Read ID (0x04) 返回:
+ *   - Byte 0: 制造商ID (Sitronix = 0x85)
+ *   - Byte 1: 模块版本
+ *   - Byte 2: 模块ID (ST7789V = 0x52)
+ *
+ * Return: 24-bit ID, 读取失败返回0
+ */
+static uint32_t bsp_lcd_read_st7789_id(void)
+{
+        uint8_t id[3] = {0};
+
+        lcd_write_cmd(ST7789_CMD_READ_ID);
+
+        (void)(lcd_read_data() & 0xFF);                 /* Dummy */
+        id[0] = (uint8_t)(lcd_read_data() & 0xFF);      /* Manufacturer */
+        id[1] = (uint8_t)(lcd_read_data() & 0xFF);      /* Version */
+        id[2] = (uint8_t)(lcd_read_data() & 0xFF);      /* Module/Driver */
+
+        return ((uint32_t)id[0] << 16) | ((uint32_t)id[1] << 8) | id[2];
+}
+
+/**
+ * bsp_lcd_detect_controller - 自动检测LCD控制器型号
+ *
+ * 优先尝试ILI9341 (0xD3), 若返回0则尝试ST7789V (0x04)。
+ * 返回检测到的控制器类型和ID值。
+ *
+ * @id: 输出参数, 控制器ID值
+ * Return: enum lcd_controller
+ */
+static enum lcd_controller bsp_lcd_detect_controller(uint32_t *id)
+{
+        uint32_t ili9341_id, st7789_id;
+
+        /* 尝试ILI9341 ID (命令0xD3) */
+        ili9341_id = bsp_lcd_read_ili9341_id();
+        if (ili9341_id != 0x000000) {
+                *id = ili9341_id;
+                if (ili9341_id == 0x000093)
+                        pr_info_with_tag("LCD", "Detected: ILI9341 (ID=0x%06lX)\n",
+                                         (unsigned long)ili9341_id);
+                else
+                        pr_info_with_tag("LCD", "Detected: ILI9341-compatible (ID=0x%06lX)\n",
+                                         (unsigned long)ili9341_id);
+                return LCD_CTRL_ILI9341;
+        }
+
+        /* 尝试ST7789V ID (命令0x04) */
+        st7789_id = bsp_lcd_read_st7789_id();
+        if (st7789_id != 0x000000) {
+                *id = st7789_id;
+                pr_info_with_tag("LCD", "Detected: ST7789V (ID=0x%06lX)\n",
+                                 (unsigned long)st7789_id);
+                return LCD_CTRL_ST7789V;
+        }
+
+        /*
+         * 两个控制器ID都读不到 — FSMC读路径可能不工作,
+         * 但FSMC写路径可能正常 (由三色诊断验证)。
+         * 默认使用ILI9341初始化序列 (更广泛兼容)。
+         */
+        *id = 0;
+        pr_warn_with_tag("LCD", "Cannot read LCD ID (FSMC read may be broken)\n");
+        pr_warn_with_tag("LCD", "Defaulting to ILI9341 init sequence\n");
+        return LCD_CTRL_UNKNOWN;
 }
 
 /* ==================== 公开API实现 ==================== */
 
 int bsp_lcd_init(void)
 {
+        uint32_t lcd_id;
+        enum lcd_controller detected;
+
         if (lcd_state.initialized) {
                 pr_warn_with_tag("LCD", "Already initialized\n");
                 return 0;
         }
 
-        /*
-         * 确保FSMC已初始化 (在MX_FSMC_Init中完成GPIO配置)
-         * 这里只做LCD芯片级初始化
-         */
         if (!__HAL_RCC_FSMC_IS_CLK_ENABLED()) {
                 __HAL_RCC_FSMC_CLK_ENABLE();
         }
 
-        /* 复位LCD模块 (如果硬件支持) */
-        /* 注意: ATK-DMF407的LCD复位引脚可能连接到开发板复位电路 */
+        /* FSMC使能后总线稳定延时 */
+        lcd_delay_ms(10);
 
-        /* 执行ILI9341初始化序列 */
-        ili9341_init_sequence();
+        /*
+         * Step 1: 自动检测LCD控制器型号
+         *
+         * 发送ILI9341软复位让控制器进入已知状态后再读ID。
+         * 两种控制器都响应0x01 (软复位), 不会造成损坏。
+         */
+        lcd_write_cmd(0x01);  /* 通用软复位 (ILI9341和ST7789V都支持) */
+        lcd_delay_ms(150);
 
-        /* 设置默认横屏模式 (平板APP风格) */
+        detected = bsp_lcd_detect_controller(&lcd_id);
+
+        /*
+         * Step 2: 执行对应控制器的初始化序列
+         */
+        switch (detected) {
+        case LCD_CTRL_ST7789V:
+                st7789v_init_sequence();
+                lcd_state.controller = LCD_CTRL_ST7789V;
+                break;
+        case LCD_CTRL_ILI9341:
+        default:
+                ili9341_init_sequence();
+                lcd_state.controller = LCD_CTRL_ILI9341;
+                break;
+        }
+
+        /* Step 3: 设置显示方向 */
         bsp_lcd_set_orientation(LCD_ORIENTATION_LANDSCAPE);
 
-        /* 清屏为浅灰色背景 */
+        /*
+         * Step 4: 三色诊断 — 验证FSMC基本写入
+         */
+        pr_info_with_tag("LCD", "Color diagnostic: RED...\n");
+        bsp_lcd_fill_screen(0xF800);
+        lcd_delay_ms(500);
+
+        pr_info_with_tag("LCD", "Color diagnostic: GREEN...\n");
+        bsp_lcd_fill_screen(0x07E0);
+        lcd_delay_ms(500);
+
+        pr_info_with_tag("LCD", "Color diagnostic: BLUE...\n");
+        bsp_lcd_fill_screen(0x001F);
+        lcd_delay_ms(500);
+
+        /* 最终设置为浅灰色背景 */
         bsp_lcd_fill_screen(LCD_COLOR_BG_LIGHT);
 
-        /* 开启背光 (100%亮度) */
+        /* 诊断边框: 上蓝 下绿 左红 右白 */
+        bsp_lcd_fill_rect(0, 0, lcd_state.current_width, 2, 0x001F);
+        bsp_lcd_fill_rect(0, lcd_state.current_height - 2,
+                          lcd_state.current_width, 2, 0x07E0);
+        bsp_lcd_fill_rect(0, 0, 2, lcd_state.current_height, 0xF800);
+        bsp_lcd_fill_rect(lcd_state.current_width - 2, 0,
+                          2, lcd_state.current_height, 0xFFFF);
+
+        /* 开启背光 */
         bsp_lcd_set_backlight(100);
 
         lcd_state.initialized = true;
 
-        pr_info_with_tag("LCD", "LCD initialized: %dx%d, orientation=%d\n",
+        pr_info_with_tag("LCD", "LCD ready: %dx%d orient=%d ctrl=%d ID=0x%06lX\n",
                          lcd_state.current_width,
                          lcd_state.current_height,
-                         lcd_state.orientation);
+                         lcd_state.orientation,
+                         (int)lcd_state.controller,
+                         (unsigned long)lcd_id);
 
         return 0;
 }
@@ -320,12 +613,11 @@ int bsp_lcd_set_orientation(enum lcd_orientation orient)
                 return -EINVAL;
         }
 
-        uint8_t madctl_val = 0x08;  /* 默认BGR模式 */
+        uint8_t madctl_val = 0x00;  /* RGB模式, 配合LV_COLOR_16_SWAP=0 */
 
         switch (orient) {
         case LCD_ORIENTATION_PORTRAIT:
                 /* 竖屏: 240x320 */
-                madctl_val |= 0x00;  /* MY=0, MX=0, MV=0 */
                 lcd_state.current_width = 240;
                 lcd_state.current_height = 320;
                 break;
@@ -470,15 +762,15 @@ void bsp_lcd_set_backlight(uint8_t brightness)
          */
 
         if (brightness == 0) {
-                /* 关闭背光 */
-                HAL_GPIO_WritePin(GPIOB, GPIO_PIN_0, GPIO_PIN_RESET);
+                /* 关闭背光 (LCD_BL = PH9) */
+                HAL_GPIO_WritePin(GPIOH, GPIO_PIN_9, GPIO_PIN_RESET);
         } else if (brightness >= 100) {
                 /* 最大亮度 */
-                HAL_GPIO_WritePin(GPIOB, GPIO_PIN_0, GPIO_PIN_SET);
+                HAL_GPIO_WritePin(GPIOH, GPIO_PIN_9, GPIO_PIN_SET);
         } else {
                 /* TODO: 如果需要PWM调光，在这里添加TIMx PWM代码 */
                 /* 当前简化为全亮 */
-                HAL_GPIO_WritePin(GPIOB, GPIO_PIN_0, GPIO_PIN_SET);
+                HAL_GPIO_WritePin(GPIOH, GPIO_PIN_9, GPIO_PIN_SET);
         }
 }
 
@@ -496,4 +788,33 @@ void bsp_lcd_off(void)
         lcd_write_cmd(ILI9341_CMD_DISPLAY_OFF);
 
         pr_debug_with_tag("LCD", "Display OFF (sleep mode)\n");
+}
+
+/* ==================== LVGL显示刷新回调 ==================== */
+
+/**
+ * lcd_flush_cb - LVGL显示刷新回调
+ * @disp_drv: LVGL显示驱动指针
+ * @area: 需要刷新的区域
+ * @color_p: 像素颜色数组 (RGB565)
+ *
+ * LVGL调用此函数将帧缓冲区写入LCD
+ *
+ * 直接使用LVGL原生类型, 避免函数指针强制转换导致的
+ * 未定义行为 (UB)。类型与 lv_disp_drv_t.flush_cb 完全匹配。
+ */
+void lcd_flush_cb(struct _lv_disp_drv_t *disp_drv,
+                  const lv_area_t *area,
+                  lv_color_t *color_p)
+{
+        uint16_t x = (uint16_t)area->x1;
+        uint16_t y = (uint16_t)area->y1;
+        uint16_t w = (uint16_t)(area->x2 - area->x1 + 1);
+        uint16_t h = (uint16_t)(area->y2 - area->y1 + 1);
+
+        bsp_lcd_set_window(x, y, w, h);
+        bsp_lcd_write_data_batch((const uint16_t *)color_p,
+                                 (uint32_t)w * h);
+
+        lv_disp_flush_ready(disp_drv);
 }

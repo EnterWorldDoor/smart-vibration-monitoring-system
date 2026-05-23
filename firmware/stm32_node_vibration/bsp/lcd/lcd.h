@@ -22,20 +22,27 @@
 #include <stdbool.h>
 #include <errno.h>
 
-/* LVGL类型依赖 (flush回调需要 lv_disp_drv_t, lv_area_t, lv_color_t) */
-#include "lvgl.h"
-
 /* ==================== LCD硬件参数 ==================== */
 
 #define LCD_WIDTH               320     /* 水平像素 */
 #define LCD_HEIGHT              240     /* 垂直像素 */
-#define LCD_PIXEL_FORMAT        LV_COLOR_FORMAT_RGB565  /* RGB565格式 */
+#define LCD_PIXEL_FORMAT_RGB565  0x05   /* RGB565格式 (ILI9341 COLMOD) */
 #define LCD_BPP                 16      /* 每像素位数 */
 
-/* FSMC地址映射 (Bank4, A10作为地址线) */
+/*
+ * FSMC地址映射 (Bank4, PG0→A10→LCD RS, 16-bit模式)
+ *
+ * 关键: 在16-bit模式下, HADDR[25:1] → FSMC_A[24:0]
+ *       要驱动 FSMC_A10, 需要 HADDR[11]
+ *       故偏移量为 (1 << 11) = 0x800 (非 (1 << 10))
+ *
+ * ILI9341 8080协议:
+ *   RS=0 (A10=0) → 索引寄存器 → 写入命令字节
+ *   RS=1 (A10=1) → 控制寄存器 → 写入参数/数据
+ */
 #define LCD_FSMC_BASE           0x6C000000
-#define LCD_FSMC_CMD_ADDR       (*(volatile uint16_t *)(LCD_FSMC_BASE | (1 << 10)))
-#define LCD_FSMC_DATA_ADDR      (*(volatile uint16_t *)LCD_FSMC_BASE)
+#define LCD_FSMC_CMD_ADDR       (*(volatile uint16_t *)(LCD_FSMC_BASE))
+#define LCD_FSMC_DATA_ADDR      (*(volatile uint16_t *)(LCD_FSMC_BASE | (1 << 11)))
 
 /* ==================== 颜色定义 (RGB565) ==================== */
 
@@ -178,18 +185,18 @@ void bsp_lcd_on(void);
  */
 void bsp_lcd_off(void);
 
+#include "../../lvgl.h"
+
 /**
- * lcd_flush_cb - LVGL显示刷新回调 (flush callback)
- * @disp_drv: 显示驱动指针 (LVGL传入)
+ * lcd_flush_cb - LVGL显示刷新回调
+ * @disp_drv: LVGL显示驱动指针
+ * @area: 刷新区域
+ * @color_p: 像素颜色数组 (RGB565)
  *
- * 由LVGL定时器处理器(lv_timer_handler)调用:
- *   1. LVGL标记脏区域(dirty area)
- *   2. 调用此回调将帧缓冲区写入LCD显存
- *   3. 调用 lv_disp_flush_ready() 通知LVGL刷新完成
- *
- * 实现位置: App/gui/gui_app.c
+ * 类型与 lv_disp_drv_t.flush_cb 完全匹配, 无需函数指针强制转换。
  */
-void lcd_flush_cb(lv_disp_drv_t *disp_drv, const lv_area_t *area,
-                   lv_color_t *color_p);
+void lcd_flush_cb(struct _lv_disp_drv_t *disp_drv,
+                  const lv_area_t *area,
+                  lv_color_t *color_p);
 
 #endif /* __BSP_LCD_H */

@@ -60,10 +60,10 @@ void MX_FSMC_Init(void)
   hsram1.Init.WriteBurst = FSMC_WRITE_BURST_DISABLE;
   hsram1.Init.PageSize = FSMC_PAGE_SIZE_NONE;
   /* Timing */
-  Timing.AddressSetupTime = 15;
-  Timing.AddressHoldTime = 15;
-  Timing.DataSetupTime = 255;
-  Timing.BusTurnAroundDuration = 15;
+  Timing.AddressSetupTime = 1;
+  Timing.AddressHoldTime = 1;
+  Timing.DataSetupTime = 9;
+  Timing.BusTurnAroundDuration = 1;
   Timing.CLKDivision = 16;
   Timing.DataLatency = 17;
   Timing.AccessMode = FSMC_ACCESS_MODE_A;
@@ -75,6 +75,37 @@ void MX_FSMC_Init(void)
   }
 
   /* USER CODE BEGIN FSMC_Init 2 */
+
+  /*
+   * 直接写入BTR4寄存器以覆盖CubeMX默认的过小时序。
+   *
+   * CubeMX生成的 DATAST=9 / ADDHLD=1 在168MHz下:
+   *   - 总写周期 ≈ 77ns, 地址保持仅 6ns
+   *   - ADDHLD低于ILI9341要求的10ns最小值
+   *
+   * 新时序 (@168MHz, HCLK=5.95ns):
+   *   ADDSET=15 (89ns)  ADDHLD=3 (18ns)  DATAST=60 (357ns)
+   *   总写周期 ≈ 464ns (ILI9341最小66ns, 充裕安全)
+   *
+   * 采用直接寄存器写入 (替代HAL_SRAM_Init):
+   *   1. 避免HAL的CLKDivision=0溢出 (0-1=0xFFFFFFFF)
+   *   2. 避免DataLatency=0溢出 (0-2=0xFFFFFFFE)
+   *   3. 不依赖HAL内部状态机, 确保时序一定生效
+   *
+   * RM0090要求: 修改BTR前必须清除BCR的MBKEN位
+   */
+  {
+          FSMC_Bank1->BTCR[6] &= ~(uint32_t)FSMC_BCR4_MBKEN;
+
+          FSMC_Bank1->BTCR[7] =
+                  (15U  << FSMC_BTR1_ADDSET_Pos) |
+                  (3U   << FSMC_BTR1_ADDHLD_Pos) |
+                  (60U  << FSMC_BTR1_DATAST_Pos) |
+                  (0U   << FSMC_BTR1_BUSTURN_Pos) |
+                  FSMC_ACCESS_MODE_A;
+
+          FSMC_Bank1->BTCR[6] |= (uint32_t)FSMC_BCR4_MBKEN;
+  }
 
   /* USER CODE END FSMC_Init 2 */
 }
