@@ -34,7 +34,7 @@ extern "C" {
 /* ==================== 基础配置 ==================== */
 
 #define LV_COLOR_DEPTH          16       /* RGB565 (匹配LCD硬件) */
-#define LV_COLOR_16_SWAP        0        /* 字节序 (STM32小端) */
+#define LV_COLOR_16_SWAP        0        /* 字节序 (STM32小端, FSMC 16-bit直连) */
 #define LV_COLOR_SCREEN_TRANSP  0        /* 无透明屏幕 */
 #define LV_DISP_DEF_REFR_PERIOD 33       /* 30FPS刷新 (1000/30≈33ms) */
 #define LV_DPI_DEF              130      /* 2.8寸屏DPI估算 */
@@ -50,7 +50,7 @@ extern "C" {
  *   - 分配大小: 48KB (足够320x240双缓冲)
  */
 #define LV_MEM_CUSTOM           0        /* 使用LVGL内置内存管理 */
-#define LV_MEM_SIZE             (48U * 1024U)  /* 48KB内存池 */
+#define LV_MEM_SIZE             (32U * 1024U)  /* 32KB内存池 (缩减以节省SRAM) */
 #define LV_MEM_ADR              0        /* 自动分配 */
 #define LV_MEM_BUF_MAX_NUM      16       /* 最大缓冲区数量 */
 #define LV_MEMCPY_NUM           1        /* memcpy调用次数阈值 */
@@ -68,11 +68,12 @@ extern "C" {
  */
 #define LV_TICK_CUSTOM_SYS_TIME_EXPR (xTaskGetTickCount())
 
-#define LV_USE_OS               LV_OS_FREERTOS   /* 使用FreeRTOS */
-#define LV_OS_FREERTOS_MINIMAL_STACK_SIZE 2048   /* 最小任务栈 */
-#define LV_OS_FREERTOS_TASK_PRIO_LOW            5  /* 低优先级 */
-#define LV_OS_FREERTOS_TASK_PRIO_MID           10 /* 中优先级 */
-#define LV_OS_FREERTOS_TASK_PRIO_HIGH          15 /* 高优先级 */
+/*
+ * 禁用LVGL OS集成: GUI任务独占lv_timer_handler(),
+ * 无需LVGL内部线程同步。且lv_init()在osKernelStart()之前调用,
+ * 启用FreeRTOS集成会导致互斥锁创建失败 → lv_timer_handler()死锁
+ */
+#define LV_USE_OS               0        /* 单线程模式 */
 
 /* ==================== 显示功能 ==================== */
 
@@ -80,9 +81,9 @@ extern "C" {
 #define LV_USE_REFR_DEBUG       0        /* 禁用刷新调试 */
 #define LV_USE_MEM_MONITOR      0        /* 禁用内存监控 */
 
-/* 双缓冲 (减少撕裂，但增加内存需求) */
-#define LV_DISP_DEFAULT_REFR_DOUBLE_BUFFERED 1  /* 启用双缓冲 */
-#define LV_DISP_DEFAULT_REFR_SIZE              240  /* 行缓冲大小 */
+/* 单缓冲 (节省SRAM, 约25KB) */
+#define LV_DISP_DEFAULT_REFR_DOUBLE_BUFFERED 0  /* 禁用双缓冲 (节省SRAM) */
+#define LV_DISP_DEFAULT_REFR_SIZE              320  /* 默认缓冲像素数 (1行) */
 
 /* ==================== 控件启用/禁用 ==================== */
 
@@ -157,8 +158,8 @@ extern "C" {
 #define LV_FONT_MONTSERRAT_46   0        /* 46pt */
 #define LV_FONT_MONTSERRAT_48   0        /* 48pt */
 
-/* 中文字体 (可选，需要c文件) */
-#define LV_FONT_SIMSUN_16_CJK   0        /* 宋体16px中文 */
+/* 中文字体 (必需, 已包含c文件) */
+#define LV_FONT_SIMSUN_16_CJK   1        /* 宋体16px中文 */
 
 /*
  * ⚠️ 重要: 禁用Dejavu字体!

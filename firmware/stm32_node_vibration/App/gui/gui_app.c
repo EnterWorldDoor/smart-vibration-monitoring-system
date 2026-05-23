@@ -6,7 +6,9 @@
  *   ┌─────────────────────────────────────┐
  *   │  [电机卡片] [NTC卡片] [温湿度卡片] │
  *   │                                     │
- *   │  [RS485]    [CAN]      [御姐立绘]   │ ← 右下角80x120
+ *   │  [RS232]                  [御姐立绘]│ ← 右下角80x120
+ *   │  [时间戳]                           │
+ *   │  [CAN]                              │
  *   └─────────────────────────────────────┘
  *
  * 二级界面结构:
@@ -27,32 +29,78 @@
  */
 
 #include "gui_app.h"
+#include "anime_characters.h"
+#include "../../bsp/motor/bsp_motor.h"
 #include "lcd.h"
+#include "../../bsp/touch/bsp_touch.h"
 #include "system_log/system_log.h"
+#include <stdio.h>
+#include <string.h>
+
+/* CJK font extern (compiled from lvgl/font/lv_font_simsun_16_cjk.c) */
+extern const lv_font_t lv_font_simsun_16_cjk;
 
 /* ==================== 模块内部状态 ==================== */
 
 static struct {
         lv_obj_t *main_screen;            /* 主屏幕 */
         lv_obj_t *module_screens[MODULE_COUNT]; /* 5个二级屏幕 */
+        lv_obj_t *active_screen;          /* 当前活动屏幕 */
 
         /* 主屏幕控件 */
         lv_obj_t *cards[MODULE_COUNT];    /* 5个功能卡片 */
         lv_obj_t *anime_character;        /* 御姐立绘对象 */
+        lv_obj_t *anime_avatar;           /* 左下角小头像 */
 
         /* 温湿度界面控件 */
         lv_obj_t *label_temp;
         lv_obj_t *label_humidity;
         lv_obj_t *chart_temp_humidity;
 
+        /* NTC界面控件 */
+        lv_obj_t *label_ntc_temp;
+
         /* 电机界面控件 */
         lv_obj_t *slider_motor_speed;
         lv_obj_t *label_speed_value;
         lv_obj_t *btn_start_stop;
         lv_obj_t *btn_direction;
+        lv_obj_t *btn_pid_toggle;     /* PID开关按钮 */
+        lv_obj_t *lbl_slider_hint;    /* 滑块提示标签 */
 
         bool initialized;
 } gui = {0};
+
+/*
+ * 跨任务传感器数据共享 (解决LVGL单线程访问冲突)
+ *
+ * 问题: app_enterprise任务调用gui_app_update_sensor_data()修改
+ *       LVGL控件(label_temp/label_humidity), 但LVGL独占lvgl_gui任务。
+ *       LV_USE_OS=0时, LVGL非线程安全。
+ *
+ * 方案: 使用volatile共享结构体传递数据,
+ *       lvgl_gui任务在调用lv_timer_handler()后消费数据更新控件。
+ */
+static struct {
+        float temperature;
+        float humidity;
+        volatile bool pending;
+} gui_sensor_shared = {0};
+
+/* NTC温度数据共享 (线程安全) */
+static struct {
+        float temperature;
+        volatile bool pending;
+} gui_ntc_shared = {0};
+
+/*
+ * 电机控制命令共享 (GUI任务 → app_enterprise任务)
+ *
+ * GUI事件回调 (lvgl_gui任务) 设置命令标志和参数,
+ * app_enterprise任务在 gui_app_process_updates() 中消费命令,
+ * 调用 bsp_motor_* 函数执行实际操作。
+ */
+volatile struct motor_cmd motor_cmd_shared = {0, 0, 0, 0, 0, 1, 0, 0, 0};
 
 /* ==================== 前向声明 (Forward Declarations) ==================== */
 
@@ -62,6 +110,12 @@ static struct {
  */
 static void card_click_event_handler(lv_event_t *e);
 static void btn_back_event_handler(lv_event_t *e);
+static lv_obj_t *create_title_bar(lv_obj_t *screen, enum gui_module_id module_id,
+                                  const char *title);
+static void motor_slider_event_cb(lv_event_t *e);
+static void motor_start_stop_event_cb(lv_event_t *e);
+static void motor_direction_event_cb(lv_event_t *e);
+static void motor_pid_toggle_event_cb(lv_event_t *e);
 
 /* ==================== 样式定义 ==================== */
 
@@ -71,9 +125,11 @@ static void btn_back_event_handler(lv_event_t *e);
 static lv_style_t style_card;
 static lv_style_t style_card_pressed;
 static lv_style_t style_title;
+static lv_style_t style_title_cjk;       /* 中文标题样式 */
 static lv_style_t style_text_large;
 static lv_style_t style_btn_primary;
 static lv_style_t style_btn_secondary;
+static lv_style_t style_timestamp;       /* 时间戳样式 */
 
 /**
  * init_styles - 初始化所有UI样式
@@ -110,13 +166,31 @@ static void init_styles(void)
         lv_style_set_transform_zoom(&style_card_pressed, 950);  /* 缩小到95% */
 
         /*
-         * 标题文字样式 (粗体, 16px)
+         * 标题文字样式 (粗体, 16px Montserrat - Latin)
          */
         lv_style_init(&style_title);
         lv_style_set_text_font(&style_title,
                                &lv_font_montserrat_16);
         lv_style_set_text_color(&style_title,
                                 THEME_TEXT_PRIMARY);
+
+        /*
+         * 中文标题文字样式 (16px SimSun CJK)
+         */
+        lv_style_init(&style_title_cjk);
+        lv_style_set_text_font(&style_title_cjk,
+                               &lv_font_simsun_16_cjk);
+        lv_style_set_text_color(&style_title_cjk,
+                                THEME_TEXT_PRIMARY);
+
+        /*
+         * 时间戳样式 (12px Montserrat, 灰色)
+         */
+        lv_style_init(&style_timestamp);
+        lv_style_set_text_font(&style_timestamp,
+                               &lv_font_montserrat_12);
+        lv_style_set_text_color(&style_timestamp,
+                                THEME_TEXT_SECONDARY);
 
         /*
          * 大号数字样式 (用于传感器数值显示)
@@ -204,11 +278,11 @@ static lv_obj_t *create_module_card(lv_obj_t *parent,
                                    &lv_font_montserrat_20, 0);  /* v8: 最大启用字体20pt */
 
         /*
-         * 标题文字
+         * 标题文字 (使用中文字体)
          */
         lv_obj_t *title_label = lv_label_create(card);
         lv_label_set_text(title_label, title);
-        lv_obj_add_style(title_label, &style_title, 0);
+        lv_obj_add_style(title_label, &style_title_cjk, 0);
         lv_label_set_long_mode(title_label,
                                LV_LABEL_LONG_DOT);
 
@@ -230,7 +304,15 @@ static void card_click_event_handler(lv_event_t *e)
                           (unsigned long)id);
 
         if (id < MODULE_COUNT) {
+                /*
+                 * 仅电机卡片允许进入二级界面, 其余模块暂时禁用。
+                 * LCD屏幕质量差, 其他界面存在显示异常, 先集中调试电机控制。
+                 */
+                if (id == MODULE_MOTOR)
+                        gui_app_show_module_screen((enum gui_module_id)id);
+#if 0
                 gui_app_show_module_screen((enum gui_module_id)id);
+#endif
         }
 }
 
@@ -242,12 +324,81 @@ static void card_click_event_handler(lv_event_t *e)
  */
 static void btn_back_event_handler(lv_event_t *e)
 {
-        (void)e;  /* 未使用参数 */
+        lv_obj_t *btn = lv_event_get_target(e);
 
-        pr_debug_with_tag("GUI", "Back button pressed\n");
+        pr_info_with_tag("GUI", "Back button pressed — returning to main screen\n");
+
+        /* 视觉反馈: 按钮短暂变色 */
+        lv_obj_set_style_bg_color(btn, THEME_TEXT_SECONDARY, 0);
+        lv_obj_set_style_bg_opa(btn, LV_OPA_30, 0);
 
         /* 切换回主屏幕 */
         gui_app_show_main_screen();
+}
+
+/**
+ * create_title_bar - 创建统一的二级界面标题栏
+ * @screen: 父屏幕
+ * @module_id: 模块ID (用于选择对应角色头像)
+ * @title: 标题文字
+ *
+ * 标题栏布局: [←返回] ——— 标题 ——— [32x32头像]
+ * 背景白色, 底部分隔线
+ *
+ * Return: 内容区域对象 (标题栏下方的可用空间)
+ */
+static lv_obj_t *create_title_bar(lv_obj_t *screen, enum gui_module_id module_id,
+                                  const char *title)
+{
+        /* 标题栏容器 */
+        lv_obj_t *header = lv_obj_create(screen);
+        lv_obj_set_size(header, GUI_SCREEN_WIDTH, 40);
+        lv_obj_set_pos(header, 0, 0);
+        lv_obj_set_style_bg_color(header, lv_color_hex(0xFFFFFF), 0);
+        lv_obj_set_style_bg_opa(header, LV_OPA_COVER, 0);
+        lv_obj_set_style_border_side(header, LV_BORDER_SIDE_BOTTOM, 0);
+        lv_obj_set_style_border_width(header, 1, 0);
+        lv_obj_set_style_border_color(header, lv_color_hex(0xE0E0E0), 0);
+        lv_obj_clear_flag(header, LV_OBJ_FLAG_CLICKABLE);
+
+        /* 返回按钮 (加大尺寸+可见边框确保触摸命中) */
+        lv_obj_t *btn_back = lv_btn_create(header);
+        lv_obj_set_size(btn_back, 72, 34);
+        lv_obj_align(btn_back, LV_ALIGN_LEFT_MID, 5, 0);
+        lv_obj_set_style_bg_color(btn_back, lv_color_hex(0xEEEEEE), 0);
+        lv_obj_set_style_border_width(btn_back, 1, 0);
+        lv_obj_set_style_border_color(btn_back, lv_color_hex(0xCCCCCC), 0);
+        lv_obj_add_event_cb(btn_back, btn_back_event_handler,
+                            LV_EVENT_CLICKED, NULL);
+        lv_obj_t *lbl_back = lv_label_create(btn_back);
+        lv_label_set_text(lbl_back, LV_SYMBOL_LEFT "返回");
+        lv_obj_set_style_text_font(lbl_back, &lv_font_simsun_16_cjk, 0);
+        lv_obj_center(lbl_back);
+
+        /* 标题文字 */
+        lv_obj_t *lbl_title = lv_label_create(header);
+        lv_label_set_text(lbl_title, title);
+        lv_obj_add_style(lbl_title, &style_title_cjk, 0);
+        lv_obj_align(lbl_title, LV_ALIGN_CENTER, 0, 0);
+
+        /* 角色头像 (32x32) */
+        const void *avatar = anime_get_character_img(module_id, false);
+        if (avatar) {
+                lv_obj_t *img_avatar = lv_img_create(header);
+                lv_img_set_src(img_avatar, avatar);
+                lv_obj_set_size(img_avatar, ANIME_AVATAR_SIZE, ANIME_AVATAR_SIZE);
+                lv_obj_align(img_avatar, LV_ALIGN_RIGHT_MID, -10, 0);
+        }
+
+        /* 内容区域 (标题栏下方) */
+        lv_obj_t *content = lv_obj_create(screen);
+        lv_obj_set_size(content, GUI_SCREEN_WIDTH, GUI_SCREEN_HEIGHT - 40);
+        lv_obj_set_pos(content, 0, 40);
+        lv_obj_set_style_bg_opa(content, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(content, 0, 0);
+        lv_obj_clear_flag(content, LV_OBJ_FLAG_CLICKABLE);
+
+        return content;
 }
 
 /* ==================== 二次元立绘创建 ==================== */
@@ -270,165 +421,122 @@ static void btn_back_event_handler(lv_event_t *e)
  */
 static lv_obj_t *create_anime_character(lv_obj_t *parent)
 {
-        /*
-         * 创建图片容器
-         */
-        lv_obj_t *img_container = lv_obj_create(parent);
-        lv_obj_set_size(img_container,
-                        ANIME_CHARACTER_WIDTH,
-                        ANIME_CHARACTER_HEIGHT);
+        lv_obj_t *img = lv_img_create(parent);
 
-        /* 定位到右下角 */
-        lv_obj_align(img_container, LV_ALIGN_BOTTOM_RIGHT, -5, -5);
+        lv_obj_set_size(img, ANIME_CHARACTER_WIDTH, ANIME_CHARACTER_HEIGHT);
+        lv_obj_align(img, LV_ALIGN_BOTTOM_RIGHT, -5, -5);
 
-        /* 设置透明背景 (不遮挡其他控件) */
-        lv_obj_set_style_bg_opa(img_container, LV_OPA_TRANSP, 0);
-        lv_obj_set_style_border_width(img_container, 1, 0);
-        lv_obj_set_style_border_color(img_container,
-                                       lv_color_hex(0xFF80AB), 0);  /* 粉色边框 */
+        lv_img_set_src(img, &anime_sakoji_main);
 
-        /*
-         * 创建占位符文本 (提示用户替换为真实图片)
-         * 实际项目中应使用:
-         *   lv_img_set_src(img, &anime_img_data);
-         * 其中 anime_img_data 由图片转换工具生成
-         */
-        lv_obj_t *placeholder = lv_label_create(img_container);
-        lv_label_set_text(placeholder, "祥子\n立绘\n80x120");
-        lv_obj_center(placeholder);
-        lv_label_set_long_mode(placeholder, LV_LABEL_LONG_WRAP);
-        lv_obj_set_style_text_align(placeholder,
-                                    LV_TEXT_ALIGN_CENTER, 0);
-        lv_obj_set_style_text_color(placeholder,
-                                    lv_color_hex(0xEC407A), 0);  /* 粉红色 */
-        lv_obj_set_style_text_font(placeholder,
-                                   &lv_font_montserrat_10, 0);
+        pr_info_with_tag("GUI", "Anime character loaded: 80x120 Sakiko photo\n");
 
-        /*
-         * TODO: 替换为真实的二次元立绘图片
-         *
-         * 推荐角色 (丰川祥子风格):
-         *   - 发型: 黑色长直发/双马尾
-         *   - 服装: 黑色制服/摇滚风
-         *   - 表情: 酷帅/微笑 (两种状态)
-         *   - 姿势: 抱吉他/站立
-         *
-         * 图片格式转换命令:
-         *   $ python lvgl_img_converter.py \
-         *       --input sakoji.png \
-         *       --output anime_sakoji.c \
-         *       --format RGB565 \
-         *       --size 80x120
-         *
-         * 使用示例:
-         *   LV_IMG_DECLARE(anime_sakoji);
-         *   lv_img_set_src(img, &anime_sakoji);
-         */
-
-        return img_container;
+        return img;
 }
 
 /* ==================== 主屏幕创建 ==================== */
 
 /**
- * create_main_screen - 创建主屏幕界面
+ * create_main_screen - 创建主屏幕界面 (手动布局)
  *
- * 布局方案 (320x240横屏):
+ * 布局方案 (320x240横屏, 粉白背景):
  *   ┌──────────────────────────────────────────┐
  *   │  ┌─────┐  ┌─────┐  ┌─────┐              │
- *   │  │电机 │  │NTC │  │温湿度│              │
+ *   │  │电机 │  │NTC │  │温湿度│              │ ← y=5
  *   │  └─────┘  └─────┘  └─────┘              │
  *   │                                          │
- *   │  ┌─────┐  ┌─────┐              ┌──────┐ │
- *   │  │RS485│  │CAN │              │御姐  │ │
- *   │  └─────┘  └─────┘              │立绘  │ │
- *   │                                └──────┘ │
+ *   │  ┌─────┐                       ┌──────┐ │
+ *   │  │RS232│                       │御姐  │ │ ← y=88
+ *   │  └─────┘                       │立绘  │ │
+ *   │  [时间戳]                      └──────┘ │
+ *   │  ┌─────┐                                │
+ *   │  │CAN  │                                │ ← y=183
+ *   │  └─────┘                                │
  *   └──────────────────────────────────────────┘
  */
 static lv_obj_t *create_main_screen(void)
 {
+        int row1_y = 5;
+        int row1_card_h = 75;
+        int row2_y = 88;
+        int row2_card_h = 65;
+        int col0_x = 12;
+        int col1_x = 115;
+        int col2_x = 218;
+
         /*
          * 创建屏幕对象
          */
         lv_obj_t *screen = lv_scr_act();
-        lv_obj_remove_style_all(screen);  /* 清除默认样式 */
 
-        /* 设置背景颜色 (浅灰磨砂质感) */
-        lv_obj_set_style_bg_color(screen, THEME_BG_COLOR, 0);
-        lv_obj_set_style_bg_opa(screen, LV_OPA_COVER, 0);
-
-        /*
-         * 创建Flex布局容器 (自动排列卡片)
-         */
-        lv_obj_t *container = lv_obj_create(screen);
-        lv_obj_set_size(container, GUI_SCREEN_WIDTH, GUI_SCREEN_HEIGHT);
-        lv_obj_set_pos(container, 0, 0);
-        lv_obj_set_flex_flow(container, LV_FLEX_FLOW_ROW_WRAP);
-        lv_obj_set_flex_align(container, LV_FLEX_ALIGN_SPACE_EVENLY,
-                              LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
-        lv_obj_set_style_pad_all(container, GUI_CARD_MARGIN, 0);
-        lv_obj_set_style_bg_opa(container, LV_OPA_TRANSP, 0);
+        /* 设置背景颜色 (粉白) — 不调用remove_style_all避免破坏LVGL默认主题 */
+        lv_obj_set_style_bg_color(screen, THEME_BG_COLOR, LV_PART_MAIN);
+        lv_obj_set_style_bg_opa(screen, LV_OPA_COVER, LV_PART_MAIN);
 
         /*
-         * 第一行: 3个功能卡片
+         * 第一行: 3个功能卡片 (手动定位)
          */
 
         /* 卡片1: 直流有刷电机 (蓝绿色) */
         gui.cards[MODULE_MOTOR] = create_module_card(
-                container,
-                MODULE_MOTOR,
-                "直流电机",
-                LV_SYMBOL_POWER,
-                COLOR_MOTOR
-        );
+                screen, MODULE_MOTOR,
+                "直流电机", LV_SYMBOL_POWER, COLOR_MOTOR);
+        lv_obj_set_pos(gui.cards[MODULE_MOTOR], col0_x, row1_y);
+        lv_obj_set_size(gui.cards[MODULE_MOTOR],
+                        GUI_CARD_WIDTH, row1_card_h);
 
         /* 卡片2: NTC温度采集 (橙红色) */
         gui.cards[MODULE_NTC] = create_module_card(
-                container,
-                MODULE_NTC,
-                "NTC温度",
-                LV_SYMBOL_BELL,  /* v8: THERMOMETER未定义,使用BELL替代 */
-                COLOR_NTC
-        );
+                screen, MODULE_NTC,
+                "NTC温度", LV_SYMBOL_BELL, COLOR_NTC);
+        lv_obj_set_pos(gui.cards[MODULE_NTC], col1_x, row1_y);
+        lv_obj_set_size(gui.cards[MODULE_NTC],
+                        GUI_CARD_WIDTH, row1_card_h);
 
         /* 卡片3: 温湿度传感器 (青蓝色) */
         gui.cards[MODULE_TEMP_HUMIDITY] = create_module_card(
-                container,
-                MODULE_TEMP_HUMIDITY,
+                screen, MODULE_TEMP_HUMIDITY,
                 "温湿度",
                 "\xEF\xBC\x92\xE2\x98\x83",  /* Unicode: 🌒 (云+水滴) */
-                COLOR_TEMP_HUMIDITY
-        );
+                COLOR_TEMP_HUMIDITY);
+        lv_obj_set_pos(gui.cards[MODULE_TEMP_HUMIDITY], col2_x, row1_y);
+        lv_obj_set_size(gui.cards[MODULE_TEMP_HUMIDITY],
+                        GUI_CARD_WIDTH, row1_card_h);
 
         /*
-         * 第二行: 2个卡片 + 占位符(给立绘留位置)
+         * 第二行左侧: RS232通信 (紫色)
          */
-
-        /* 卡片4: RS485通信 (紫色) */
         gui.cards[MODULE_RS485] = create_module_card(
-                container,
-                MODULE_RS485,
-                "RS485",
-                LV_SYMBOL_USB,
-                COLOR_RS485
-        );
+                screen, MODULE_RS485,
+                "RS232", LV_SYMBOL_USB, COLOR_RS485);
+        lv_obj_set_pos(gui.cards[MODULE_RS485], col0_x, row2_y);
+        lv_obj_set_size(gui.cards[MODULE_RS485],
+                        GUI_CARD_WIDTH, row2_card_h);
 
-        /* 卡片5: CAN总线 (深蓝色) */
+        /*
+         * 左下角御姐小头像 (RS232下方, 32x32)
+         */
+        gui.anime_avatar = lv_img_create(screen);
+        lv_img_set_src(gui.anime_avatar, &anime_sakoji_avatar);
+        lv_obj_set_pos(gui.anime_avatar, col0_x + 28,
+                        row2_y + row2_card_h + 6);
+
+        /*
+         * CAN总线卡片 (小头像下方, 紧凑高度)
+         */
         gui.cards[MODULE_CAN] = create_module_card(
-                container,
-                MODULE_CAN,
-                "CAN总线",
-                LV_SYMBOL_BELL,
-                COLOR_CAN
-        );
+                screen, MODULE_CAN,
+                "CAN总线", LV_SYMBOL_BELL, COLOR_CAN);
+        lv_obj_set_pos(gui.cards[MODULE_CAN], col0_x,
+                        row2_y + row2_card_h + 5 + 36);
+        lv_obj_set_size(gui.cards[MODULE_CAN],
+                        GUI_CARD_WIDTH, 40);
 
         /*
          * 创建二次元御姐立绘 (右下角常驻)
          */
         gui.anime_character = create_anime_character(screen);
 
-        pr_info_with_tag("GUI", "Main screen created with %d cards + anime character\n",
-                         MODULE_COUNT);
+        pr_info_with_tag("GUI", "Main screen created with 5 cards + anime + timestamp\n");
 
         return screen;
 }
@@ -448,45 +556,11 @@ static lv_obj_t *create_main_screen(void)
 static lv_obj_t *create_motor_screen(void)
 {
         lv_obj_t *screen = lv_obj_create(NULL);
-        lv_obj_remove_style_all(screen);
+        lv_obj_set_style_bg_color(screen, THEME_BG_COLOR, LV_PART_MAIN);
+        lv_obj_set_style_bg_opa(screen, LV_OPA_COVER, LV_PART_MAIN);
 
-        /* 背景 */
-        lv_obj_set_style_bg_color(screen, THEME_BG_COLOR, 0);
-        lv_obj_set_style_bg_opa(screen, LV_OPA_COVER, 0);
-
-        /*
-         * 标题栏
-         */
-        lv_obj_t *header = lv_obj_create(screen);
-        lv_obj_set_size(header, GUI_SCREEN_WIDTH, 40);
-        lv_obj_set_pos(header, 0, 0);
-        lv_obj_set_style_bg_color(header, lv_color_hex(0xFFFFFF), 0);
-        lv_obj_set_style_border_side(header, LV_BORDER_SIDE_BOTTOM, 0);
-        lv_obj_set_style_border_width(header, 1, 0);
-        lv_obj_set_style_border_color(header, lv_color_hex(0xE0E0E0), 0);
-
-        /* 返回按钮 */
-        lv_obj_t *btn_back = lv_btn_create(header);
-        lv_obj_set_size(btn_back, 60, 30);
-        lv_obj_align(btn_back, LV_ALIGN_LEFT_MID, 10, 0);
-        lv_obj_add_event_cb(btn_back, btn_back_event_handler,
-                            LV_EVENT_CLICKED, NULL);
-        lv_obj_t *lbl_back = lv_label_create(btn_back);
-        lv_label_set_text(lbl_back, LV_SYMBOL_LEFT " 返回");
-
-        /* 标题文字 */
-        lv_obj_t *title = lv_label_create(header);
-        lv_label_set_text(title, "直流有刷电机");
-        lv_obj_add_style(title, &style_title, 0);
-        lv_obj_align(title, LV_ALIGN_CENTER, 0, 0);
-
-        /*
-         * 内容区域
-         */
-        lv_obj_t *content = lv_obj_create(screen);
-        lv_obj_set_size(content, GUI_SCREEN_WIDTH, GUI_SCREEN_HEIGHT - 40);
-        lv_obj_set_pos(content, 0, 40);
-        lv_obj_set_style_bg_opa(content, LV_OPA_TRANSP, 0);
+        lv_obj_t *content = create_title_bar(screen, MODULE_MOTOR,
+                                             "直流有刷电机");
         lv_obj_set_flex_flow(content, LV_FLEX_FLOW_COLUMN);
         lv_obj_set_flex_align(content, LV_FLEX_ALIGN_CENTER,
                               LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
@@ -495,7 +569,9 @@ static lv_obj_t *create_motor_screen(void)
         /* 转速滑块 */
         lv_obj_t *lbl_slider = lv_label_create(content);
         lv_label_set_text(lbl_slider, "转速调节 (PWM)");
+        lv_obj_set_style_text_font(lbl_slider, &lv_font_simsun_16_cjk, 0);
         lv_obj_set_style_text_color(lbl_slider, THEME_TEXT_SECONDARY, 0);
+        gui.lbl_slider_hint = lbl_slider;
 
         gui.slider_motor_speed = lv_slider_create(content);
         lv_obj_set_width(gui.slider_motor_speed, 250);
@@ -503,6 +579,9 @@ static lv_obj_t *create_motor_screen(void)
         lv_slider_set_value(gui.slider_motor_speed, 0, LV_ANIM_OFF);  /* v8: 需要anim参数 */
         lv_obj_set_style_bg_color(gui.slider_motor_speed,
                                    COLOR_MOTOR, LV_PART_INDICATOR);
+	lv_obj_add_event_cb(gui.slider_motor_speed,
+	                    motor_slider_event_cb,
+	                    LV_EVENT_VALUE_CHANGED, NULL);
 
         /* 转速数值显示 */
         gui.label_speed_value = lv_label_create(content);
@@ -515,7 +594,11 @@ static lv_obj_t *create_motor_screen(void)
         lv_obj_add_style(gui.btn_start_stop, &style_btn_primary, 0);
         lv_obj_t *lbl_start = lv_label_create(gui.btn_start_stop);
         lv_label_set_text(lbl_start, LV_SYMBOL_PLAY "  启动电机");
+        lv_obj_set_style_text_font(lbl_start, &lv_font_simsun_16_cjk, 0);
 
+	lv_obj_add_event_cb(gui.btn_start_stop,
+	                    motor_start_stop_event_cb,
+	                    LV_EVENT_CLICKED, NULL);
         /* 方向按钮组 */
         lv_obj_t *btn_row = lv_obj_create(content);
         lv_obj_set_size(btn_row, 260, 45);
@@ -529,10 +612,117 @@ static lv_obj_t *create_motor_screen(void)
         lv_obj_add_style(gui.btn_direction, &style_btn_secondary, 0);
         lv_obj_t *lbl_dir = lv_label_create(gui.btn_direction);
         lv_label_set_text(lbl_dir, LV_SYMBOL_REFRESH " 正转");
+        lv_obj_set_style_text_font(lbl_dir, &lv_font_simsun_16_cjk, 0);
+
+	lv_obj_add_event_cb(gui.btn_direction,
+	                    motor_direction_event_cb,
+	                    LV_EVENT_CLICKED, NULL);
+
+	/* PID开关按钮 */
+	gui.btn_pid_toggle = lv_btn_create(btn_row);
+	lv_obj_set_size(gui.btn_pid_toggle, 80, 40);
+	lv_obj_add_style(gui.btn_pid_toggle, &style_btn_secondary, 0);
+	lv_obj_t *lbl_pid = lv_label_create(gui.btn_pid_toggle);
+	lv_label_set_text(lbl_pid, "PID OFF");
+	lv_obj_set_style_text_font(lbl_pid, &lv_font_simsun_16_cjk, 0);
+	lv_obj_add_event_cb(gui.btn_pid_toggle,
+	                    motor_pid_toggle_event_cb,
+	                    LV_EVENT_CLICKED, NULL);
 
         pr_debug_with_tag("GUI", "Motor control screen created\n");
 
         return screen;
+}
+
+
+/* ==================== 电机界面事件处理 ==================== */
+
+static void motor_slider_event_cb(lv_event_t *e)
+{
+	lv_obj_t *slider = lv_event_get_target(e);
+	int32_t val = (int32_t)lv_slider_get_value(slider);
+
+	motor_cmd_shared.slider_percent = (int8_t)val;
+	motor_cmd_shared.duty_changed = true;
+}
+
+static void motor_start_stop_event_cb(lv_event_t *e)
+{
+	(void)e;
+	motor_cmd_shared.start_request = true;
+}
+
+static void motor_direction_event_cb(lv_event_t *e)
+{
+	(void)e;
+	motor_cmd_shared.direction = -motor_cmd_shared.direction;
+	motor_cmd_shared.dir_changed = true;
+}
+
+static void motor_pid_toggle_event_cb(lv_event_t *e)
+{
+	(void)e;
+	motor_cmd_shared.pid_toggle_request = true;
+}
+
+/*
+ * gui_app_consume_motor_cmds - 消费电机控制命令 (由enterprise任务调用)
+ *
+ * 在enterprise任务上下文中执行, 安全调用bsp_motor_*函数。
+ */
+void gui_app_consume_motor_cmds(void)
+{
+	if (!motor_cmd_shared.start_request &&
+	    !motor_cmd_shared.stop_request &&
+	    !motor_cmd_shared.duty_changed &&
+	    !motor_cmd_shared.dir_changed)
+		return;
+
+	enum motor_state state;
+
+	bsp_motor_get_state(&state);
+
+	if (motor_cmd_shared.dir_changed) {
+		bsp_motor_set_direction(motor_cmd_shared.direction);
+		motor_cmd_shared.dir_changed = false;
+	}
+
+	if (motor_cmd_shared.start_request) {
+		motor_cmd_shared.start_request = false;
+		if (state == MOTOR_STATE_IDLE) {
+			bsp_motor_start();
+			int32_t duty = (int32_t)motor_cmd_shared.slider_percent
+				* BSP_MOTOR_PWM_MAX_DUTY / 100;
+			if (duty > 0)
+				bsp_motor_set_duty(duty);
+		} else if (state == MOTOR_STATE_RUNNING) {
+			bsp_motor_stop();
+		}
+	}
+
+	if (motor_cmd_shared.duty_changed) {
+		motor_cmd_shared.duty_changed = false;
+		/*
+		 * PID模式下不直接设置duty, PID控制器自行调节。
+		 * 非PID模式保持Phase 1行为: slider=占空比%。
+		 */
+		if (state == MOTOR_STATE_RUNNING &&
+		    !motor_cmd_shared.pid_active) {
+			int32_t duty = (int32_t)motor_cmd_shared.slider_percent
+				* BSP_MOTOR_PWM_MAX_DUTY / 100;
+			bsp_motor_set_duty(duty);
+		}
+	}
+
+	if (motor_cmd_shared.stop_request) {
+		motor_cmd_shared.stop_request = false;
+		bsp_motor_stop();
+	}
+
+	if (motor_cmd_shared.pid_toggle_request) {
+		motor_cmd_shared.pid_toggle_request = false;
+		motor_cmd_shared.pid_active = !motor_cmd_shared.pid_active;
+	}
 }
 
 /**
@@ -548,38 +738,11 @@ static lv_obj_t *create_motor_screen(void)
 static lv_obj_t *create_temp_humidity_screen(void)
 {
         lv_obj_t *screen = lv_obj_create(NULL);
-        lv_obj_remove_style_all(screen);
-        lv_obj_set_style_bg_color(screen, THEME_BG_COLOR, 0);
-        lv_obj_set_style_bg_opa(screen, LV_OPA_COVER, 0);
+        lv_obj_set_style_bg_color(screen, THEME_BG_COLOR, LV_PART_MAIN);
+        lv_obj_set_style_bg_opa(screen, LV_OPA_COVER, LV_PART_MAIN);
 
-        /* 标题栏 (同上模式) */
-        lv_obj_t *header = lv_obj_create(screen);
-        lv_obj_set_size(header, GUI_SCREEN_WIDTH, 40);
-        lv_obj_set_pos(header, 0, 0);
-        lv_obj_set_style_bg_color(header, lv_color_hex(0xFFFFFF), 0);
-        lv_obj_set_style_border_side(header, LV_BORDER_SIDE_BOTTOM, 0);
-        lv_obj_set_style_border_width(header, 1, 0);
-
-        lv_obj_t *btn_back = lv_btn_create(header);
-        lv_obj_set_size(btn_back, 60, 30);
-        lv_obj_align(btn_back, LV_ALIGN_LEFT_MID, 10, 0);
-        lv_obj_add_event_cb(btn_back, btn_back_event_handler,
-                            LV_EVENT_CLICKED, NULL);
-        lv_obj_t *lbl_back = lv_label_create(btn_back);
-        lv_label_set_text(lbl_back, LV_SYMBOL_LEFT " 返回");
-
-        lv_obj_t *title = lv_label_create(header);
-        lv_label_set_text(title, "温湿度监控");
-        lv_obj_add_style(title, &style_title, 0);
-        lv_obj_align(title, LV_ALIGN_CENTER, 0, 0);
-
-        /*
-         * 数据展示区域
-         */
-        lv_obj_t *content = lv_obj_create(screen);
-        lv_obj_set_size(content, GUI_SCREEN_WIDTH, GUI_SCREEN_HEIGHT - 40);
-        lv_obj_set_pos(content, 0, 40);
-        lv_obj_set_style_bg_opa(content, LV_OPA_TRANSP, 0);
+        lv_obj_t *content = create_title_bar(screen, MODULE_TEMP_HUMIDITY,
+                                             "温湿度监控");
         lv_obj_set_flex_flow(content, LV_FLEX_FLOW_ROW);
         lv_obj_set_flex_align(content, LV_FLEX_ALIGN_SPACE_EVENLY,
                               LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
@@ -593,10 +756,10 @@ static lv_obj_t *create_temp_humidity_screen(void)
         lv_obj_add_style(card_temp, &style_card, 0);
 
         lv_obj_t *icon_temp = lv_label_create(card_temp);
-        lv_label_set_text(icon_temp, LV_SYMBOL_BELL);  /* v8: 使用BELL替代THERMOMETER */
+        lv_label_set_text(icon_temp, LV_SYMBOL_BELL);
         lv_obj_set_style_text_color(icon_temp, COLOR_NTC, 0);
         lv_obj_set_style_text_font(icon_temp,
-                                   &lv_font_montserrat_20, 0);  /* v8: 最大启用字体20pt */
+                                   &lv_font_montserrat_20, 0);
         lv_obj_align(icon_temp, LV_ALIGN_TOP_MID, 0, 10);
 
         gui.label_temp = lv_label_create(card_temp);
@@ -606,6 +769,7 @@ static lv_obj_t *create_temp_humidity_screen(void)
 
         lv_obj_t *unit_temp = lv_label_create(card_temp);
         lv_label_set_text(unit_temp, "温度");
+        lv_obj_set_style_text_font(unit_temp, &lv_font_simsun_16_cjk, 0);
         lv_obj_set_style_text_color(unit_temp, THEME_TEXT_SECONDARY, 0);
         lv_obj_align(unit_temp, LV_ALIGN_BOTTOM_MID, 0, -10);
 
@@ -620,7 +784,7 @@ static lv_obj_t *create_temp_humidity_screen(void)
         lv_label_set_text(icon_hum, "\xE2\x92\x92");  /* 水滴符号 */
         lv_obj_set_style_text_color(icon_hum, COLOR_TEMP_HUMIDITY, 0);
         lv_obj_set_style_text_font(icon_hum,
-                                   &lv_font_montserrat_20, 0);  /* v8: 最大启用字体20pt */
+                                   &lv_font_montserrat_20, 0);
         lv_obj_align(icon_hum, LV_ALIGN_TOP_MID, 0, 10);
 
         gui.label_humidity = lv_label_create(card_hum);
@@ -630,6 +794,7 @@ static lv_obj_t *create_temp_humidity_screen(void)
 
         lv_obj_t *unit_hum = lv_label_create(card_hum);
         lv_label_set_text(unit_hum, "湿度");
+        lv_obj_set_style_text_font(unit_hum, &lv_font_simsun_16_cjk, 0);
         lv_obj_set_style_text_color(unit_hum, THEME_TEXT_SECONDARY, 0);
         lv_obj_align(unit_hum, LV_ALIGN_BOTTOM_MID, 0, -10);
 
@@ -646,81 +811,54 @@ static lv_obj_t *create_temp_humidity_screen(void)
 static lv_obj_t *create_ntc_screen(void)
 {
         lv_obj_t *screen = lv_obj_create(NULL);
-        lv_obj_remove_style_all(screen);
-        lv_obj_set_style_bg_color(screen, THEME_BG_COLOR, 0);
+        lv_obj_set_style_bg_color(screen, THEME_BG_COLOR, LV_PART_MAIN);
+        lv_obj_set_style_bg_opa(screen, LV_OPA_COVER, LV_PART_MAIN);
 
-        /* 标题栏 */
-        lv_obj_t *header = lv_obj_create(screen);
-        lv_obj_set_size(header, GUI_SCREEN_WIDTH, 40);
-        lv_obj_set_style_bg_color(header, lv_color_hex(0xFFFFFF), 0);
+        lv_obj_t *content = create_title_bar(screen, MODULE_NTC,
+                                             "NTC温度采集");
+        lv_obj_set_flex_flow(content, LV_FLEX_FLOW_COLUMN);
+        lv_obj_set_flex_align(content, LV_FLEX_ALIGN_CENTER,
+                              LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
-        lv_obj_t *btn_back = lv_btn_create(header);
-        lv_obj_set_size(btn_back, 60, 30);
-        lv_obj_align(btn_back, LV_ALIGN_LEFT_MID, 10, 0);
-        lv_obj_add_event_cb(btn_back, btn_back_event_handler,
-                            LV_EVENT_CLICKED, NULL);
-        lv_obj_t *lbl = lv_label_create(btn_back);
-        lv_label_set_text(lbl, LV_SYMBOL_LEFT " 返回");
+        /* NTC图标 */
+        lv_obj_t *icon_ntc = lv_label_create(content);
+        lv_label_set_text(icon_ntc, LV_SYMBOL_BELL);
+        lv_obj_set_style_text_color(icon_ntc, COLOR_NTC, 0);
+        lv_obj_set_style_text_font(icon_ntc, &lv_font_montserrat_20, 0);
 
-        lv_obj_t *title = lv_label_create(header);
-        lv_label_set_text(title, "NTC温度采集");
-        lv_obj_add_style(title, &style_title, 0);
-        lv_obj_align(title, LV_ALIGN_CENTER, 0, 0);
+        /* NTC温度数值 */
+        gui.label_ntc_temp = lv_label_create(content);
+        lv_label_set_text(gui.label_ntc_temp, "--.- °C");
+        lv_obj_add_style(gui.label_ntc_temp, &style_text_large, 0);
 
-        /* 内容区占位 */
-        lv_obj_t *content = lv_obj_create(screen);
-        lv_obj_set_size(content, GUI_SCREEN_WIDTH, GUI_SCREEN_HEIGHT - 40);
-        lv_obj_set_pos(content, 0, 40);
-        lv_obj_set_style_bg_opa(content, LV_OPA_TRANSP, 0);
-
-        lv_obj_t *msg = lv_label_create(content);
-        lv_label_set_text(msg, "NTC温度传感器数据\n\n"
-                           "当前温度: --.- °C\n\n"
-                           "(硬件接口待连接)");
-        lv_obj_center(msg);
-        lv_obj_set_style_text_color(msg, THEME_TEXT_SECONDARY, 0);
+        /* 说明文字 */
+        lv_obj_t *hint = lv_label_create(content);
+        lv_label_set_text(hint, "NTC热敏电阻 (ADC3_IN9 / PF3)");
+        lv_obj_set_style_text_font(hint, &lv_font_simsun_16_cjk, 0);
+        lv_obj_set_style_text_color(hint, THEME_TEXT_SECONDARY, 0);
 
         return screen;
 }
 
 /**
- * create_rs485_screen - RS485通信界面
+ * create_rs485_screen - RS232通信界面
  */
 static lv_obj_t *create_rs485_screen(void)
 {
         lv_obj_t *screen = lv_obj_create(NULL);
-        lv_obj_remove_style_all(screen);
-        lv_obj_set_style_bg_color(screen, THEME_BG_COLOR, 0);
+        lv_obj_set_style_bg_color(screen, THEME_BG_COLOR, LV_PART_MAIN);
+        lv_obj_set_style_bg_opa(screen, LV_OPA_COVER, LV_PART_MAIN);
 
-        lv_obj_t *header = lv_obj_create(screen);
-        lv_obj_set_size(header, GUI_SCREEN_WIDTH, 40);
-        lv_obj_set_style_bg_color(header, lv_color_hex(0xFFFFFF), 0);
-
-        lv_obj_t *btn_back = lv_btn_create(header);
-        lv_obj_set_size(btn_back, 60, 30);
-        lv_obj_align(btn_back, LV_ALIGN_LEFT_MID, 10, 0);
-        lv_obj_add_event_cb(btn_back, btn_back_event_handler,
-                            LV_EVENT_CLICKED, NULL);
-        lv_obj_t *lbl = lv_label_create(btn_back);
-        lv_label_set_text(lbl, LV_SYMBOL_LEFT " 返回");
-
-        lv_obj_t *title = lv_label_create(header);
-        lv_label_set_text(title, "RS485通信");
-        lv_obj_add_style(title, &style_title, 0);
-        lv_obj_align(title, LV_ALIGN_CENTER, 0, 0);
-
-        lv_obj_t *content = lv_obj_create(screen);
-        lv_obj_set_size(content, GUI_SCREEN_WIDTH, GUI_SCREEN_HEIGHT - 40);
-        lv_obj_set_pos(content, 0, 40);
-        lv_obj_set_style_bg_opa(content, LV_OPA_TRANSP, 0);
+        lv_obj_t *content = create_title_bar(screen, MODULE_RS485,
+                                             "RS232通信");
 
         lv_obj_t *msg = lv_label_create(content);
-        lv_label_set_text(msg, "RS485总线配置\n\n"
-                           "波特率: 9600 bps\n"
+        lv_label_set_text(msg, "RS232总线配置\n\n"
+                           "波特率: 115200 bps\n"
                            "数据位: 8\n"
                            "停止位: 1\n"
                            "校验: None\n\n"
-                           "(Modbus RTU协议)");
+                           "(UART通讯协议)");
         lv_obj_center(msg);
         lv_obj_set_style_text_color(msg, THEME_TEXT_SECONDARY, 0);
 
@@ -733,30 +871,11 @@ static lv_obj_t *create_rs485_screen(void)
 static lv_obj_t *create_can_screen(void)
 {
         lv_obj_t *screen = lv_obj_create(NULL);
-        lv_obj_remove_style_all(screen);
-        lv_obj_set_style_bg_color(screen, THEME_BG_COLOR, 0);
+        lv_obj_set_style_bg_color(screen, THEME_BG_COLOR, LV_PART_MAIN);
+        lv_obj_set_style_bg_opa(screen, LV_OPA_COVER, LV_PART_MAIN);
 
-        lv_obj_t *header = lv_obj_create(screen);
-        lv_obj_set_size(header, GUI_SCREEN_WIDTH, 40);
-        lv_obj_set_style_bg_color(header, lv_color_hex(0xFFFFFF), 0);
-
-        lv_obj_t *btn_back = lv_btn_create(header);
-        lv_obj_set_size(btn_back, 60, 30);
-        lv_obj_align(btn_back, LV_ALIGN_LEFT_MID, 10, 0);
-        lv_obj_add_event_cb(btn_back, btn_back_event_handler,
-                            LV_EVENT_CLICKED, NULL);
-        lv_obj_t *lbl = lv_label_create(btn_back);
-        lv_label_set_text(lbl, LV_SYMBOL_LEFT " 返回");
-
-        lv_obj_t *title = lv_label_create(header);
-        lv_label_set_text(title, "CAN总线监控");
-        lv_obj_add_style(title, &style_title, 0);
-        lv_obj_align(title, LV_ALIGN_CENTER, 0, 0);
-
-        lv_obj_t *content = lv_obj_create(screen);
-        lv_obj_set_size(content, GUI_SCREEN_WIDTH, GUI_SCREEN_HEIGHT - 40);
-        lv_obj_set_pos(content, 0, 40);
-        lv_obj_set_style_bg_opa(content, LV_OPA_TRANSP, 0);
+        lv_obj_t *content = create_title_bar(screen, MODULE_CAN,
+                                             "CAN总线监控");
 
         lv_obj_t *msg = lv_label_create(content);
         lv_label_set_text(msg, "CAN总线状态\n\n"
@@ -764,6 +883,7 @@ static lv_obj_t *create_can_screen(void)
                            "工作模式: Normal\n"
                            "错误计数: TX=0 RX=0\n\n"
                            "(接收帧数: 0)");
+        lv_obj_set_style_text_font(msg, &lv_font_simsun_16_cjk, 0);
         lv_obj_center(msg);
         lv_obj_set_style_text_color(msg, THEME_TEXT_SECONDARY, 0);
 
@@ -780,42 +900,23 @@ int gui_app_init(void)
         }
 
         /*
-         * Step 1: 初始化LVGL库
+         * 注意: lv_init() 和显示驱动注册已在 main.c 中完成
+         * 此处仅初始化UI样式和创建界面
          */
-        lv_init();
 
         /*
-         * Step 2: 注册显示驱动 (FSMC LCD)
-         */
-        static lv_disp_draw_buf_t draw_buf;
-        static lv_color_t buf1[GUI_SCREEN_WIDTH * 50];  /* 行缓冲 */
-        static lv_color_t buf2[GUI_SCREEN_WIDTH * 50];  /* 双缓冲 */
-
-        lv_disp_draw_buf_init(&draw_buf, buf1, buf2,
-                              GUI_SCREEN_WIDTH * 50);
-
-        static lv_disp_drv_t disp_drv;
-        lv_disp_drv_init(&disp_drv);
-        disp_drv.hor_res = GUI_SCREEN_WIDTH;
-        disp_drv.ver_res = GUI_SCREEN_HEIGHT;
-        disp_drv.flush_cb = lcd_flush_cb;  /* LCD刷新回调 */
-        disp_drv.draw_buf = &draw_buf;
-        disp_drv.user_data = NULL;
-
-        lv_disp_drv_register(&disp_drv);
-
-        /*
-         * Step 3: 初始化UI样式
+         * Step 1: 初始化UI样式
          */
         init_styles();
 
         /*
-         * Step 4: 创建主屏幕
+         * Step 2: 创建主屏幕
          */
         gui.main_screen = create_main_screen();
+        gui.active_screen = gui.main_screen;
 
         /*
-         * Step 5: 创建所有二级屏幕
+         * Step 3: 创建所有二级屏幕
          */
         gui.module_screens[MODULE_MOTOR] = create_motor_screen();
         gui.module_screens[MODULE_NTC] = create_ntc_screen();
@@ -855,7 +956,8 @@ void gui_app_show_module_screen(enum gui_module_id module_id)
                 return;
         }
 
-        lv_scr_load(gui.module_screens[module_id]);
+        gui.active_screen = gui.module_screens[module_id];
+        lv_scr_load(gui.active_screen);
 
         pr_debug_with_tag("GUI", "Switched to module screen: %d\n", module_id);
 }
@@ -866,107 +968,225 @@ void gui_app_show_main_screen(void)
                 return;
         }
 
-        lv_scr_load(gui.main_screen);
+        gui.active_screen = gui.main_screen;
+        lv_scr_load(gui.active_screen);
 
         pr_debug_with_tag("GUI", "Returned to main screen\n");
 }
 
+lv_obj_t *gui_app_get_active_screen(void)
+{
+        if (!gui.initialized)
+                return NULL;
+
+        return gui.active_screen;
+}
+
 void gui_app_update_sensor_data(float temperature, float humidity)
 {
-        if (!gui.initialized || !gui.label_temp || !gui.label_humidity) {
+        gui_sensor_shared.temperature = temperature;
+        gui_sensor_shared.humidity = humidity;
+        gui_sensor_shared.pending = true;
+}
+
+void gui_app_update_ntc_data(float temperature)
+{
+        gui_ntc_shared.temperature = temperature;
+        gui_ntc_shared.pending = true;
+}
+
+/**
+ * gui_app_process_updates - 处理跨任务数据更新 (由lvgl_gui任务周期调用)
+ *
+ * 消费 app_enterprise 任务写入的共享数据,
+ * 在LVGL任务上下文中安全地更新控件。
+ */
+void gui_app_process_updates(void)
+{
+        if (!gui.initialized)
                 return;
+
+        /*
+         * 消费传感器数据更新
+         */
+        if (gui_sensor_shared.pending) {
+                if (gui.label_temp && gui.label_humidity) {
+                        char buf_temp[16];
+                        char buf_hum[24];
+                        float t = gui_sensor_shared.temperature;
+                        float h = gui_sensor_shared.humidity;
+                        int t_dec = (int)(t * 10.0f + 0.5f);
+                        int h_dec = (int)(h * 10.0f + 0.5f);
+
+                        snprintf(buf_temp, sizeof(buf_temp), "%d.%d C",
+                                 t_dec / 10, t_dec % 10);
+                        snprintf(buf_hum, sizeof(buf_hum), "%d.%d %%",
+                                 h_dec / 10, h_dec % 10);
+
+                        lv_label_set_text(gui.label_temp, buf_temp);
+                        lv_label_set_text(gui.label_humidity, buf_hum);
+                }
+                gui_sensor_shared.pending = false;
         }
 
-        static char buf_temp[16];
-        static char buf_hum[16];
+        /*
+         * 消费NTC温度数据更新
+         */
+        if (gui_ntc_shared.pending) {
+                if (gui.label_ntc_temp) {
+                        char buf[16];
+                        float t = gui_ntc_shared.temperature;
+                        int t_int = (int)t;
+                        int t_frac = (int)((t - (float)(int)t) * 10.0f + 0.5f);
+                        if (t_frac < 0) t_frac = -t_frac;
 
-        snprintf(buf_temp, sizeof(buf_temp), "%5.1f °C", temperature);
-        snprintf(buf_hum, sizeof(buf_hum), "%5.1f %%RH", humidity);
-
-        lv_label_set_text(gui.label_temp, buf_temp);
-        lv_label_set_text(gui.label_humidity, buf_hum);
-
-        pr_debug_with_tag("GUI", "Sensor data updated: T=%.1f H=%.1f\n",
-                          temperature, humidity);
+                        snprintf(buf, sizeof(buf), "%d.%d °C",
+                                 t_int, t_frac);
+                        lv_label_set_text(gui.label_ntc_temp, buf);
+                }
+                gui_ntc_shared.pending = false;
+        }
 }
 
 void gui_app_update_motor_status(uint32_t speed,
                                   bool is_running,
-                                  int8_t direction)
+                                  int8_t direction,
+                                  bool pid_active,
+                                  int32_t target_rpm)
 {
         if (!gui.initialized || !gui.label_speed_value) {
                 return;
         }
 
-        static char buf_speed[16];
-        snprintf(buf_speed, sizeof(buf_speed), "%lu RPM",
-                 (unsigned long)speed);
-
+        static char buf_speed[32];
+        if (pid_active && is_running) {
+                snprintf(buf_speed, sizeof(buf_speed), "%lu / %ld RPM",
+                         (unsigned long)speed, (long)target_rpm);
+        } else {
+                snprintf(buf_speed, sizeof(buf_speed), "%lu RPM",
+                         (unsigned long)speed);
+        }
         lv_label_set_text(gui.label_speed_value, buf_speed);
+
+        /* 更新启停按钮文字 */
+        if (gui.btn_start_stop) {
+                lv_obj_t *lbl = lv_obj_get_child(gui.btn_start_stop, 0);
+                if (lbl) {
+                        if (is_running)
+                                lv_label_set_text(lbl,
+                                        LV_SYMBOL_STOP "  停止电机");
+                        else
+                                lv_label_set_text(lbl,
+                                        LV_SYMBOL_PLAY "  启动电机");
+                }
+        }
+
+        /* 更新PID按钮文字 */
+        if (gui.btn_pid_toggle) {
+                lv_obj_t *lbl = lv_obj_get_child(gui.btn_pid_toggle, 0);
+                if (lbl) {
+                        if (pid_active)
+                                lv_label_set_text(lbl, "PID ON");
+                        else
+                                lv_label_set_text(lbl, "PID OFF");
+                }
+        }
+
+        /* 更新滑块提示 */
+        if (gui.lbl_slider_hint) {
+                if (pid_active)
+                        lv_label_set_text(gui.lbl_slider_hint,
+                                "目标转速 (RPM)");
+                else
+                        lv_label_set_text(gui.lbl_slider_hint,
+                                "转速调节 (PWM)");
+        }
+
+        /* 更新方向按钮文字 */
+        if (gui.btn_direction) {
+                lv_obj_t *lbl = lv_obj_get_child(gui.btn_direction, 0);
+                if (lbl) {
+                        if (direction > 0)
+                                lv_label_set_text(lbl,
+                                        LV_SYMBOL_REFRESH " 正转");
+                        else
+                                lv_label_set_text(lbl,
+                                        LV_SYMBOL_REFRESH " 反转");
+                }
+        }
 
         pr_debug_with_tag("GUI", "Motor status updated: speed=%lu running=%d dir=%d\n",
                           (unsigned long)speed, is_running, direction);
 }
 
-/* ==================== LVGL显示驱动回调 ==================== */
+/* ==================== 触摸输入设备集成 ==================== */
 
 /**
- * lcd_flush_cb - LCD显存刷新回调 (LVGL调用)
+ * touch_read_cb - LVGL触摸输入读取回调
+ * @indev_drv: LVGL输入设备驱动
+ * @data: 输出触摸数据
  *
- * 此函数由LVGL在渲染完成后调用，
- * 负责将帧缓冲区的像素数据写入LCD硬件。
- *
- * @disp_drv: 显示驱动指针
- * @area: 待刷新的区域坐标
- * @color_p: 像素数据缓冲区指针
- *
- * 实现流程:
- *   1. 设置FSMC窗口寻址范围 (bsp_lcd_set_window)
- *   2. 批量写入像素数据 (bsp_lcd_write_data_batch)
- *   3. 通知LVGL刷新完成 (lv_disp_flush_ready)
+ * 由LVGL周期调用 (每30ms), 读取触摸坐标并返回。
  */
-void lcd_flush_cb(lv_disp_drv_t *disp_drv,
-                  const lv_area_t *area,
-                  lv_color_t *color_p)
+static void touch_read_cb(lv_indev_drv_t *indev_drv, lv_indev_data_t *data)
 {
-        /*
-         * 参数校验
-         */
-        if (!disp_drv || !area || !color_p) {
-                return;
+        struct bsp_touch_data touch;
+        int ret;
+
+        (void)indev_drv;
+
+        ret = bsp_touch_scan(&touch);
+
+        if (ret > 0 && touch.num_points > 0) {
+                data->state = LV_INDEV_STATE_PR;
+                data->point.x = touch.points[0].x;
+                data->point.y = touch.points[0].y;
+        } else {
+                data->state = LV_INDEV_STATE_REL;
+        }
+}
+
+/**
+ * gui_app_touch_input_init - 初始化触摸输入设备
+ *
+ * 创建LVGL输入设备驱动并注册触摸扫描回调。
+ * 必须先调用 gui_app_init() 创建屏幕对象。
+ *
+ * Return: 0 成功, 负值错误码
+ */
+int gui_app_touch_input_init(void)
+{
+        int ret;
+
+        if (!gui.initialized) {
+                pr_error_with_tag("GUI",
+                                 "Cannot init touch: GUI not initialized\n");
+                return -EINVAL;
         }
 
-        int32_t x1 = area->x1;
-        int32_t y1 = area->y1;
-        int32_t x2 = area->x2;
-        int32_t y2 = area->y2;
-        int32_t w = x2 - x1 + 1;
-        int32_t h = y2 - y1 + 1;
-
-        /* 边界检查 */
-        if ((w <= 0) || (h <= 0)) {
-                lv_disp_flush_ready(disp_drv);
-                return;
+        /*
+         * 初始化触摸硬件驱动
+         */
+        ret = bsp_touch_init();
+        if (ret != 0) {
+                pr_warn_with_tag("GUI",
+                                "Touch HW init failed: %d, "
+                                "GUI will operate without touch\n", ret);
+                return ret;
         }
 
         /*
-         * 设置FSMC写入窗口
+         * 注册LVGL输入设备
          */
-        bsp_lcd_set_window((uint16_t)x1, (uint16_t)y1,
-                          (uint16_t)w, (uint16_t)h);
+        static lv_indev_drv_t indev_drv;
+        lv_indev_drv_init(&indev_drv);
+        indev_drv.type = LV_INDEV_TYPE_POINTER;
+        indev_drv.read_cb = touch_read_cb;
+        lv_indev_drv_register(&indev_drv);
 
-        /*
-         * 批量写入像素数据到LCD显存
-         * 注意: color_p 是 RGB565 格式的像素数组
-         */
-        bsp_lcd_write_data_batch((const uint16_t *)color_p,
-                                (uint32_t)(w * h));
+        pr_info_with_tag("GUI", "Touch input device registered with LVGL\n");
 
-        /*
-         * 通知LVGL刷新已完成
-         * 必须调用! 否则LVGL会认为刷新未完成
-         */
-        lv_disp_flush_ready(disp_drv);
+        return 0;
 }
 
 /* ==================== FreeRTOS GUI任务 ==================== */
@@ -992,106 +1212,20 @@ void gui_task_entry(void *argument)
 {
         (void)argument;
 
-        pr_info_with_tag("GUI", "+======================================+\n");
-        pr_info_with_tag("GUI", "|  LVGL GUI Task Started                |\n");
-        pr_info_with_tag("GUI", "|  =================================   |\n");
-        pr_info_with_tag("GUI", "|  ✅ Screen : 320x240 (Landscape)     |\n");
-        pr_info_with_tag("GUI", "|  ✅ Driver : FSMC 16-bit ILI9341    |\n");
-        pr_info_with_tag("GUI", "|  ✅ Theme  : Tablet APP Style       |\n");
-        pr_info_with_tag("GUI", "|  ✅ Anime  : 80x120 Character       |\n");
-        pr_info_with_tag("GUI", "+======================================+\n\n");
-
-        /*
-         * Step 1: 初始化LCD硬件
-         */
-        int ret = bsp_lcd_init();
-        if (ret != 0) {
-                pr_error_with_tag("GUI", "LCD init failed: %d\n", ret);
-                vTaskDelete(NULL);  /* 删除自身 */
-                return;
-        }
-
-        /*
-         * Step 2: 初始化LVGL库
-         */
-        lv_init();
-
-        /*
-         * Step 3: 注册显示驱动 (FSMC LCD)
-         */
-        static lv_disp_draw_buf_t draw_buf;
-        static lv_color_t buf1[GUI_SCREEN_WIDTH * 50];  /* 行缓冲 */
-        static lv_color_t buf2[GUI_SCREEN_WIDTH * 50];  /* 双缓冲 */
-
-        lv_disp_draw_buf_init(&draw_buf, buf1, buf2,
-                              GUI_SCREEN_WIDTH * 50);
-
-        static lv_disp_drv_t disp_drv;
-        lv_disp_drv_init(&disp_drv);
-        disp_drv.hor_res = GUI_SCREEN_WIDTH;
-        disp_drv.ver_res = GUI_SCREEN_HEIGHT;
-        disp_drv.flush_cb = lcd_flush_cb;  /* LCD刷新回调 */
-        disp_drv.draw_buf = &draw_buf;
-        disp_drv.user_data = NULL;
-
-        lv_disp_drv_register(&disp_drv);
-
-        pr_info_with_tag("GUI", "LVGL display driver registered\n");
-
-        /*
-         * Step 4: 初始化UI样式并创建界面
-         */
-        ret = gui_app_init();
-        if (ret != 0) {
-                pr_error_with_tag("GUI", "GUI app init failed: %d\n", ret);
-                vTaskDelete(NULL);
-                return;
-        }
-
-        pr_info_with_tag("GUI", "GUI application initialized successfully\n\n");
-
-        /*
-         * Step 5: 主循环 - LVGL定时器处理
-         *
-         * lv_timer_handler() 会:
-         *   - 处理所有注册的定时器 (动画、滚动等)
-         *   - 调用脏区域标记的控件重绘回调
-         *   - 触发 lcd_flush_cb() 刷新LCD显存
-         *
-         * 周期说明:
-         *   - 5ms周期 = 200Hz (理论最大帧率)
-         *   - 实际帧率取决于UI复杂度和LCD刷新速度
-         *   - 对于320x240分辨率，30FPS足够流畅
-         */
-        uint32_t gui_loop_count = 0;
+        pr_info_with_tag("GUI", "GUI refresh task running (200Hz)\n\n");
 
         while (1) {
-                /*
-                 * 调用LVGL定时器处理器
-                 */
                 lv_timer_handler();
 
-                gui_loop_count++;
-
                 /*
-                 * 周期性统计输出 (每200次循环 ≈ 1秒)
+                 * 处理跨任务数据更新 (传感器数据等)
+                 * 必须在lv_timer_handler()之后调用,
+                 * 确保LVGL控件可安全访问。
                  */
-                if (gui_loop_count % 200 == 0) {
-                        pr_debug_with_tag("GUI",
-                                          "GUI loop count: %lu\n",
-                                          (unsigned long)gui_loop_count);
-                }
+                gui_app_process_updates();
 
-                /*
-                 * 任务延时 (5ms周期)
-                 * 使用vTaskDelay释放CPU给其他任务
-                 */
-                vTaskDelay(pdMS_TO_TICKS(5));  /* GUI任务周期: 5ms (200Hz) */
+                vTaskDelay(pdMS_TO_TICKS(5));
         }
 
-        /*
-         * 此处不可达 (while(1)无限循环)
-         * 如果退出循环，删除任务自身
-         */
         vTaskDelete(NULL);
 }

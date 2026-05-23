@@ -26,7 +26,7 @@
 #include "FreeRTOS.h"
 #include "task.h"
 #include "main.h"
-#include "cmsis_os2.h"                  /* ⚠️ 【关键修复】必须使用RTOS2 API! */
+#include "cmsis_os2.h"                  /* CMSIS-RTOS2 API */
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -53,10 +53,25 @@ void gui_task_entry(void *argument);         /* [App/gui/gui_app.c] */
 /* USER CODE BEGIN PD */
 
 /*
+ * USE_GUI 已统一迁移至 Core/Inc/main.h (Private defines 区域)
+ *
+ * 启用/禁用GUI请修改 main.h，此文件通过 #include "main.h" 继承该定义。
+ *
+ * 原 FIXME 说明:
+ *   之前因 FSMC 时序 (DATAST=9) 导致 LCD 写入异常触发 HardFault,
+ *   现已修复为 DATAST=60 (在 fsmc.c 中), 可安全启用 USE_GUI。
+ */
+
+/*
  * GUI任务配置常量
+ *
+ * 优先级说明:
+ *   - 使用 osPriorityNormal (与APP任务同级)
+ *   - 避免高优先级GUI任务饥饿低优先级业务任务
+ *   - FreeRTOS时间片轮转保证两个任务都能执行
  */
 #define GUI_TASK_STACK_SIZE      (2048 * 4)   /* 8KB 栈空间 (LVGL需要较大栈) */
-#define GUI_TASK_PRIORITY        osPriorityAboveNormal  /* 高优先级 (保证流畅度) */
+#define GUI_TASK_PRIORITY        osPriorityNormal  /* 与APP任务同级, 防止饥饿 */
 #define GUI_TASK_PERIOD_MS       5            /* 5ms周期 (200Hz刷新率) */
 
 /* USER CODE END PD */
@@ -72,29 +87,9 @@ void gui_task_entry(void *argument);         /* [App/gui/gui_app.c] */
 /* USER CODE END Variables */
 /* Definitions for defaultTask */
 osThreadId_t defaultTaskHandle;
-
-/*
- * ⚠️ 【关键修复】增大defaultTask栈大小!
- *
- * 原始配置问题:
- *   - .stack_size = 128 * 4 (512字节) 对于任何实际任务都太小!
- *   - StartDefaultTask()中调用了:
- *     - pr_debug_with_tag() (内部使用256字节缓冲区)
- *     - pr_info_with_tag() (内部使用256字节缓冲区)
- *     - osDelay(1000) (需要栈空间保存上下文)
- *   - 512字节栈空间几乎肯定会导致栈溢出!
- *
- * 症状:
- *   - FreeRTOS检测到栈溢出 → 调用vApplicationStackOverflowHook()
- *   - 或者静默覆盖内存 → HardFault/死循环
- *
- * 修复方案:
- *   - 增大到 512*4 = 2KB (足够简单的空闲任务)
- *   - 如果仍然溢出,可以继续增大到 1024*4 = 4KB
- */
 const osThreadAttr_t defaultTask_attributes = {
   .name = "defaultTask",
-  .stack_size = 512 * 4,              /* 2KB 栈空间 (从512B增大!) */
+  .stack_size = 128 * 4,
   .priority = (osPriority_t) osPriorityNormal,
 };
 
@@ -102,6 +97,21 @@ const osThreadAttr_t defaultTask_attributes = {
 /* USER CODE BEGIN FunctionPrototypes */
 
 /* USER CODE END FunctionPrototypes */
+
+/* Private includes ----------------------------------------------------------*/
+/* USER CODE BEGIN Includes */
+
+#include "system_log/system_log.h"     /* 日志系统 */
+
+/* 应用层任务入口函数声明 */
+void app_dht11_task_entry(void *argument);  /* [App/app_main.c] */
+
+/* GUI任务入口函数声明 */
+#ifdef USE_GUI
+void gui_task_entry(void *argument);         /* [App/gui/gui_app.c] */
+#endif
+
+/* USER CODE END Includes */
 
 void StartDefaultTask(void *argument);
 
@@ -198,9 +208,9 @@ void vApplicationStackOverflowHook(TaskHandle_t xTask, char *pcTaskName)
   * @retval None
   */
 void MX_FREERTOS_Init(void) {
-  /* USER CODE Begin Init */
+  /* USER CODE BEGIN Init */
 
-  /* USER CODE End Init */
+  /* USER CODE END Init */
 
   /* USER CODE BEGIN RTOS_MUTEX */
   /* add mutexes, ... */
@@ -220,27 +230,7 @@ void MX_FREERTOS_Init(void) {
 
   /* Create the thread(s) */
   /* creation of defaultTask */
-
-  /*
-   * ⚠️ 【关键修复】添加任务创建错误检查!
-   *
-   * 原始代码问题:
-   *   - osThreadNew()可能返回NULL(内存不足/参数错误)
-   *   - 但原始代码没有检查返回值
-   *   - 导致后续使用NULL句柄崩溃
-   *
-   * 修复方案:
-   *   - 检查每个 osThreadNew() 的返回值
-   *   - 如果失败,打印错误信息并停止系统
-   */
   defaultTaskHandle = osThreadNew(StartDefaultTask, NULL, &defaultTask_attributes);
-
-  if (defaultTaskHandle == NULL) {
-          pr_error_with_tag("RTOS", "FATAL: Failed to create defaultTask! (out of memory?)\n");
-          Error_Handler();
-  }
-
-  pr_debug_with_tag("RTOS", "[DEBUG] defaultTask created: handle=0x%p\n", defaultTaskHandle);
 
   /* USER CODE BEGIN RTOS_THREADS */
 
@@ -319,8 +309,8 @@ void MX_FREERTOS_Init(void) {
   #ifdef USE_GUI
   osThreadAttr_t gui_task_attr = {
     .name = "lvgl_gui",
-    .stack_size = GUI_TASK_STACK_SIZE,     /* 8KB 栈空间 (LVGL需要) */
-    .priority = (osPriority_t) GUI_TASK_PRIORITY,  /* AboveNormal优先级 */
+    .stack_size = GUI_TASK_STACK_SIZE,
+    .priority = (osPriority_t) GUI_TASK_PRIORITY,
   };
   osThreadNew(gui_task_entry, NULL, &gui_task_attr);
 
@@ -353,32 +343,28 @@ void MX_FREERTOS_Init(void) {
 /* USER CODE END Header_StartDefaultTask */
 void StartDefaultTask(void *argument)
 {
+  /* init code for LWIP */
   /*
-   * ⚠️ LWIP网络栈已禁用 (企业版不需要)
-   * 原因: 本项目专注于电机控制+传感器采集，不需要以太网通信
-   * 如需启用LWIP:
-   *   1. 在main.c中取消MX_LWIP_Init()注释
-   *   2. 取消以下代码块的注释
-   *   3. 确保SPI/DMA外设已初始化
+   * FIX: LWIP init disabled - enterprise app does not use Ethernet.
+   * MX_LWIP_Init() hangs indefinitely when PHY (LAN8720A) has no
+   * link, permanently blocking defaultTask and starving other
+   * same-priority tasks.
+   *
+   * To re-enable Ethernet, uncomment the line below AND ensure
+   * the Ethernet cable is connected or add a timeout mechanism.
    */
-  // /* init code for LWIP */
-  // MX_LWIP_Init();
-
-  /* USER CODE Begin StartDefaultTask */
-
-  pr_debug_with_tag("RTOS", "[DEBUG] DefaultTask entry - Task Handle: 0x%p, Priority: Normal\n", defaultTaskHandle);
-  pr_info_with_tag("SYS", "[INFO] DefaultTask running (idle mode)\n");
-  pr_debug_with_tag("RTOS", "[DEBUG] DefaultTask stack size: %d bytes, entering idle loop\n", 128 * 4);
-
-  /* Infinite loop - 低功耗等待 */
+  /* MX_LWIP_Init(); */
+  /* USER CODE BEGIN StartDefaultTask */
+  /* Infinite loop */
   for(;;)
   {
-    osDelay(1000);  /* 每秒唤醒一次，降低CPU占用 */
+    osDelay(1);
   }
-  /* USER CODE End StartDefaultTask */
+  /* USER CODE END StartDefaultTask */
 }
 
 /* Private application code --------------------------------------------------*/
 /* USER CODE BEGIN Application */
 
 /* USER CODE END Application */
+

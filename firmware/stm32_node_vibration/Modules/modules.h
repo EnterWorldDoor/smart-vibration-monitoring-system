@@ -35,4 +35,6 @@
 
 /* ==================== 通信协议模块 ==================== */
 
+#include "protocol/protocol.h"
+
 #endif /* __MODULES_H */
