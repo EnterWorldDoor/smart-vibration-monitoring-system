@@ -56,6 +56,9 @@
 #define CMD_CONFIG_SET            0x12     /**< 参数配置下发 */
 #define CMD_CONFIG_GET            0x13     /**< 参数配置查询 */
 #define CMD_TIME_SYNC_REQ         0x14     /**< 时间同步请求 (ESP32→STM32, 新增) */
+#define CMD_NDE_FEATURE           0x17     /**< NDE 特征向量 (F407→ESP32) */
+#define CMD_NDE_HEARTBEAT         0x18     /**< NDE 节点心跳 (F407→ESP32) */
+#define CMD_NDE_DUAL_DIAG         0x19     /**< 双通道对比诊断 (预留) */
 
 /* 系统命令 */
 #define CMD_ACK                   0xF0     /**< ACK 确认帧 */

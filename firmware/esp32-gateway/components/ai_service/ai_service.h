@@ -133,6 +133,12 @@ const ai_health_t *ai_service_get_health(void);
  */
 uint32_t ai_service_get_buffer_fill(void);
 
+/**
+ * @brief Get the most recent feature vector (24 floats) for dual-channel comparison.
+ *        Returns 0 on success, -1 if no features have been computed yet.
+ */
+int ai_service_get_latest_features(float *features_out);
+
 #ifdef __cplusplus
 }
 #endif
