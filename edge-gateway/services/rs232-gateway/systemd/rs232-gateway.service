@@ -1,0 +1,34 @@
+[Unit]
+Description=EdgeVib RS232 Gateway — Serial-to-MQTT Bridge (Path B Backup)
+Documentation=https://github.com/EnterWorldDoor/smart-vibration-monitoring-system
+After=network.target mosquitto.service
+Wants=mosquitto.service
+
+[Service]
+Type=simple
+User=orangepi
+Group=dialout
+WorkingDirectory=/opt/edge-gateway
+ExecStart=/opt/edge-gateway/services/rs232-gateway/build/rs232-gateway /opt/edge-gateway/config/rs232-gateway.yaml
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=rs232-gateway
+
+# Security hardening
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/dev/ttyUSB0 /var/log
+ReadOnlyPaths=/opt/edge-gateway/config
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+RestrictRealtime=yes
+MemoryMax=50M
+
+# Resource limits
+LimitNOFILE=1024
+
+[Install]
+WantedBy=multi-user.target
