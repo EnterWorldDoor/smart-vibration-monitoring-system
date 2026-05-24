@@ -1,0 +1,18 @@
+# Grafana Datasources Configuration
+apiVersion: 1
+
+datasources:
+  - name: EdgeVib-TimescaleDB
+    uid: edgevib-ts
+    type: postgres
+    access: proxy
+    url: timescaledb:5432
+    database: edgevib_ts
+    user: edgevib
+    secureJsonData:
+      password: ${DB_PASSWORD:-edgevib123}
+    jsonData:
+      sslmode: disable
+      postgresVersion: 1600
+      timescaledb: true
+    editable: false

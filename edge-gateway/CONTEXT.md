@@ -264,3 +264,128 @@ ssh root@192.168.1.1 "docker ps | grep aggregator && docker logs edgevib-aggrega
 | 第一阶段 (MVP) | Mosquitto + data-aggregator + TimescaleDB + Grafana + rs232-gateway |
 | 第二阶段 (AI) | ONNX inference-engine + llm-analyzer + vision-service |
 | 第三阶段 (高可用) | OTA Server + edge-router + OPC UA Server |
+
+## 第二阶段仪表盘 (Dashboard Phase 2)
+
+### 技术方案
+
+**Grafana 纯前端 + 后续 API Server**（分步推进）:
+- **第一步**: 纯 Grafana 仪表盘 — 直接查询 TimescaleDB（PostgreSQL JSONB 操作符），零新代码，Grafana 原生支持 HDMI Kiosk 工厂现场投屏
+- **第二步**: API Server（Go REST + WebSocket）并行开发，提供实时数据推送能力。后续 Grafana 可切到 API 数据源，API 也可复用于 SCADA/组态软件等外部系统
+
+### JSONB 字段提取
+
+**PostgreSQL VIEW 策略**: 建 `vibration_view`、`ai_diagnosis_view`、`device_health_view` 等数据库视图，将 `sensor_data.payload` JSONB 解构成平表列。
+
+- data-aggregator 保持现有设计——payload 以 `json.RawMessage` 全透传进 JSONB 列，不做解构（不耦合 ESP32 JSON schema）
+- VIEW 层在数据库侧独立维护，可自由迭代，不碰 Go 代码
+- Grafana 面板查询只需 `SELECT * FROM vibration_view`，SQL 简洁
+
+### 仪表盘页面划分
+
+| 页面 | 内容 | 数据源 |
+|------|------|--------|
+| **设备概览** | 全部设备状态卡片（在线/离线/告警），当前 RMS 值、AI 分类结果 | `sensor_data` JSONB |
+| **振动详情** | 单设备 RMS 趋势图（X/Y/Z/Overall）、FFT 频谱图、峰值频率趋势 | `vibration_view` |
+| **AI 故障诊断** | AI 分类历史、置信度趋势、级联来源统计（primary_cnn/fallback_rule） | `ai_diagnosis_view` |
+| **双通道对比** | DE/NDE RMS ratio 趋势、频谱相似度、相位一致性 | `dual_channel_view` |
+| **系统健康** | aggregator 健康指标（消息吞吐、去重率、DB 错误）、ESP32 在线状态 | `EdgeVib/+/status/health` MQTT 或 `sensor_data` 中 `service_state` |
+| **环境监测** | 温度/湿度趋势，温度补偿状态 | `environment_view` |
+
+设备概览为默认首页（HDMI 大屏 Kiosk 全屏展示），振动详情/AI 诊断/双通道对比为设备级钻取页。
+
+### 实时数据方案
+
+- **Grafana**: 5s auto-refresh，与 data-aggregator 批次写入间隔对齐
+- **端到端延迟**: ESP32(2s) → aggregator攒批(≤5s) → Grafana拉取(5s) = 最坏12s，实际约7s
+- **WebSocket 真实时**: 留待第二步 api-server 实现，主要用于告警即时推送和外部系统集成。当前工业振动监测 5s 级别足够
+
+### 告警规则 (Grafana Alerting)
+
+**等级体系**（基于 ISO 10816 标准，与 `config/inference.yaml` 阈值对齐）:
+
+| 等级 | 触发条件 | 颜色 | 动作 |
+|------|----------|------|------|
+| **正常** | RMS < 2.8, AI=normal, confidence ≥ 0.85 | 绿 | 无 |
+| **预警** | RMS 2.8~7.1, 或 AI=imbalance/misalignment 且 confidence ≥ 0.85, 或温度 > 45°C | 黄 | Grafana 面板高亮 |
+| **严重** | RMS > 7.1, 或 AI=bearing_fault 且 confidence ≥ 0.85, 或 RMS ratio > 2.0 | 红 | Grafana 面板高亮 + 告警通知 |
+
+**实现方式**: 纯 Grafana Alerting — 告警规则写在面板 SQL 的阈值列中，利用 Grafana 内置 alerting 引擎。不需新服务，后期可扩展 MQTT 通知联动 ESP32 声光报警。
+
+### PostgreSQL VIEW 定义
+
+存储在 `edge-gateway/docker/timescaledb/views.sql`，独立于 `init.sql`，手动导入。
+
+| 视图 | 用途 | 提取字段 |
+|------|------|----------|
+| `vibration_view` | 振动详情页 | `time, site_id, device_type, device_id, rms_x, rms_y, rms_z, overall_rms, peak_frequency_hz, peak_amplitude_g, fft_peaks(JSONB)` |
+| `ai_diagnosis_view` | AI 故障诊断页 | `time, site_id, device_type, device_id, ai_class_id, ai_class_name, ai_confidence, ai_cascade_source, ai_inference_time_us` |
+| `dual_channel_view` | 双通道对比页 | `time, site_id, device_type, device_id, rms_ratio, spectral_similarity, phase_coherence, nde_online, nde_errors` |
+| `environment_view` | 环境监测页 | `time, site_id, device_type, device_id, temperature_c, humidity_rh, compensation_active` |
+| `device_status_view` | 设备概览页 | `time, site_id, device_type, device_id, service_state, data_quality, last_rms, last_temperature, last_ai_class, last_ai_confidence`（窗口函数取每个 device 最新一条） |
+
+VIEW 层在数据库侧独立维护，aggregator 代码零改动。Grafana 面板 SQL 直接 `SELECT * FROM vibration_view WHERE ...`
+
+### API Server 与 Dashboard 的职责边界
+
+- **Grafana 仪表盘**: 历史数据查询 + 趋势展示 + 告警面板高亮 + HDMI Kiosk 投屏
+- **API Server (后续)**: WebSocket 真实时推送 + REST API 供外部系统 (SCADA/组态软件) 消费 + 告警通知 MQTT 下发
+
+第一步纯 Grafana 交付，api-server 骨架保持不变，第二步再并行开发。
+
+### 待办事项 (Dashboard Phase 2)
+
+- [x] 编写 `docker/timescaledb/views.sql`（5 个 PostgreSQL VIEW）
+- [x] 编写 `docker/grafana/dashboards/device-overview.json`（设备概览）
+- [x] 编写 `docker/grafana/dashboards/vibration-detail.json`（振动详情）
+- [x] 编写 `docker/grafana/dashboards/ai-diagnosis.json`（AI 故障诊断）
+- [x] 编写 `docker/grafana/dashboards/dual-channel.json`（双通道对比）
+- [x] 编写 `docker/grafana/dashboards/system-health.json`（系统健康）
+- [x] 编写 `docker/grafana/dashboards/environment.json`（环境监测）
+- [x] Grafana 告警规则配置（ISO 10816 阈值 — 面板 fieldConfig.thresholds 色阶实现）
+- [x] 更新 Grafana dashboard provisioning 配置（`dashboards.yml` + datasource `uid: edgevib-ts`）
+- [x] 编写集成测试（`tests/integration/` — pytest + psycopg2 + Grafana API）
+- [ ] 部署到 Orange Pi 4 Pro 验证
+
+### 实现概要 (2026-05-24)
+
+**已创建文件**:
+| 文件 | 用途 |
+|------|------|
+| `docker/timescaledb/views.sql` | 5 个 PostgreSQL VIEW — `vibration_view`, `ai_diagnosis_view`, `dual_channel_view`, `environment_view`, `device_status_view` |
+| `docker/grafana/dashboards.yml` | Dashboard provider provisioning 配置 |
+| `docker/grafana/dashboards/device-overview.json` | 设备概览（首页/Kiosk），4 Stat + Device Table + Message Throughput |
+| `docker/grafana/dashboards/vibration-detail.json` | 振动详情，RMS X/Y/Z/Overall 趋势 + FFT 频谱 + 峰值趋势 |
+| `docker/grafana/dashboards/ai-diagnosis.json` | AI 故障诊断，置信度趋势 + 分类分布饼图 + 级联来源统计 |
+| `docker/grafana/dashboards/dual-channel.json` | DE/NDE 双通道对比，RMS Ratio + Spectral Similarity + Phase Coherence |
+| `docker/grafana/dashboards/system-health.json` | 系统健康，设备在线状态表 + 消息吞吐 + Data Quality Gauge |
+| `docker/grafana/dashboards/environment.json` | 环境监测，温湿度趋势 + 温度补偿状态 |
+| `tests/integration/conftest.py` | 测试 fixtures — DB 连接、Grafana 会话、`make_payload()` 数据生成器 |
+| `tests/integration/test_dashboard_views.py` | 23 个集成测试 — VIEW 提取正确性、NULL 处理、阈值边界、Grafana API |
+| `tests/integration/insert_test_data.sql` | 独立 SQL 测试数据 — 3 设备 × 多时间点，含一条 CRITICAL 告警记录 |
+| `tests/integration/requirements-test.txt` | pytest, psycopg2-binary, requests |
+
+**已修改文件**:
+| 文件 | 修改 |
+|------|------|
+| `docker/grafana/datasources.yml` | 添加 `uid: edgevib-ts` 稳定引用 |
+| `CONTEXT.md` | 更新待办事项为已完成 |
+
+**部署步骤** (Orange Pi 4 Pro):
+```bash
+# 1. 同步文件到 Orange Pi
+rsync -avz --exclude='.git/' /d/smartSystem/edge-gateway/ orangepi@192.168.1.1:/opt/edge-gateway/
+
+# 2. 导入 VIEWs
+ssh orangepi@192.168.1.1 "docker exec -i edgevib-timescaledb psql -U edgevib -d edgevib_ts" < docker/timescaledb/views.sql
+
+# 3. 重启 Grafana 加载 dashboard
+ssh orangepi@192.168.1.1 "cd /opt/edge-gateway && docker compose -f docker/docker-compose.yml restart grafana"
+
+# 4. 插入测试数据
+ssh orangepi@192.168.1.1 "docker exec -i edgevib-timescaledb psql -U edgevib -d edgevib_ts" < tests/integration/insert_test_data.sql
+
+# 5. 运行集成测试
+ssh orangepi@192.168.1.1 "cd /opt/edge-gateway && pip3 install -r tests/integration/requirements-test.txt"
+ssh orangepi@192.168.1.1 "cd /opt/edge-gateway/tests/integration && TEST_DB_HOST=localhost python3 -m pytest test_dashboard_views.py -v"
+```

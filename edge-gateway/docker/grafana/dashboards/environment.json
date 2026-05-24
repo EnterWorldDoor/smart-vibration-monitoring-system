@@ -1,0 +1,280 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": { "type": "postgres", "uid": "edgevib-ts" },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "target": { "limit": 100, "matchAny": false, "tags": [], "type": "dashboard" },
+        "type": "dashboard"
+      }
+    ]
+  },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "id": 100,
+      "panels": [],
+      "title": "Environment",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "postgres", "uid": "edgevib-ts" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "green", "value": null },
+            { "color": "yellow", "value": 35 },
+            { "color": "red", "value": 45 }
+          ]},
+          "unit": "celsius"
+        }
+      },
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 1 },
+      "id": 1,
+      "options": { "colorMode": "background", "graphMode": "none", "justifyMode": "auto", "orientation": "auto", "textMode": "auto" },
+      "pluginVersion": "11.0.0",
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "edgevib-ts" },
+          "format": "table",
+          "rawSql": "SELECT ROUND(MAX(temperature_c)::numeric, 1) FROM environment_view WHERE $__timeFilter(time)",
+          "refId": "A"
+        }
+      ],
+      "title": "Max Temp",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "postgres", "uid": "edgevib-ts" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "green", "value": null }
+          ]},
+          "unit": "celsius"
+        }
+      },
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 1 },
+      "id": 2,
+      "options": { "colorMode": "value", "graphMode": "none", "justifyMode": "auto", "orientation": "auto", "textMode": "auto" },
+      "pluginVersion": "11.0.0",
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "edgevib-ts" },
+          "format": "table",
+          "rawSql": "SELECT ROUND(MIN(temperature_c)::numeric, 1) FROM environment_view WHERE $__timeFilter(time)",
+          "refId": "A"
+        }
+      ],
+      "title": "Min Temp",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "postgres", "uid": "edgevib-ts" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "green", "value": null },
+            { "color": "yellow", "value": 35 },
+            { "color": "red", "value": 45 }
+          ]},
+          "unit": "celsius"
+        }
+      },
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 1 },
+      "id": 3,
+      "options": { "colorMode": "background", "graphMode": "none", "justifyMode": "auto", "orientation": "auto", "textMode": "auto" },
+      "pluginVersion": "11.0.0",
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "edgevib-ts" },
+          "format": "table",
+          "rawSql": "SELECT ROUND(AVG(temperature_c)::numeric, 1) FROM environment_view WHERE $__timeFilter(time)",
+          "refId": "A"
+        }
+      ],
+      "title": "Avg Temp",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "postgres", "uid": "edgevib-ts" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "green", "value": null }
+          ]},
+          "unit": "percent"
+        }
+      },
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 1 },
+      "id": 4,
+      "options": { "colorMode": "value", "graphMode": "none", "justifyMode": "auto", "orientation": "auto", "textMode": "auto" },
+      "pluginVersion": "11.0.0",
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "edgevib-ts" },
+          "format": "table",
+          "rawSql": "SELECT ROUND(AVG(humidity_rh)::numeric, 1) FROM environment_view WHERE $__timeFilter(time)",
+          "refId": "A"
+        }
+      ],
+      "title": "Avg Humidity",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "postgres", "uid": "edgevib-ts" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "Celsius",
+            "axisPlacement": "auto",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "lineWidth": 2,
+            "scaleDistribution": { "type": "linear" },
+            "thresholdsStyle": { "mode": "line+area" }
+          },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "green", "value": null },
+            { "color": "yellow", "value": 35 },
+            { "color": "red", "value": 45 }
+          ]},
+          "unit": "celsius"
+        }
+      },
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 5 },
+      "id": 5,
+      "options": { "legend": { "calcs": ["mean", "min", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "none" } },
+      "pluginVersion": "11.0.0",
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "edgevib-ts" },
+          "format": "time_series",
+          "rawSql": "SELECT time, device_id, temperature_c FROM environment_view WHERE $__timeFilter(time) ORDER BY time ASC",
+          "refId": "A"
+        }
+      ],
+      "title": "Temperature by Device",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "postgres", "uid": "edgevib-ts" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "%RH",
+            "axisPlacement": "auto",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "lineWidth": 2,
+            "scaleDistribution": { "type": "linear" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "green", "value": null }
+          ]},
+          "unit": "percent"
+        }
+      },
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 15 },
+      "id": 6,
+      "options": { "legend": { "calcs": ["mean", "min", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "none" } },
+      "pluginVersion": "11.0.0",
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "edgevib-ts" },
+          "format": "time_series",
+          "rawSql": "SELECT time, device_id, humidity_rh FROM environment_view WHERE $__timeFilter(time) ORDER BY time ASC",
+          "refId": "A"
+        }
+      ],
+      "title": "Humidity by Device",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "postgres", "uid": "edgevib-ts" },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": { "type": "auto" },
+            "inspect": false
+          },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "green", "value": null }
+          ]}
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "compensation_active" },
+            "properties": [
+              { "id": "custom.cellOptions", "value": { "type": "color-background", "mode": "basic" } },
+              { "id": "mappings", "value": [
+                { "type": "value", "options": { "true": { "color": "green", "text": "Active" } } },
+                { "type": "value", "options": { "false": { "color": "gray", "text": "Inactive" } } }
+              ]}
+            ]
+          }
+        ]
+      },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 25 },
+      "id": 7,
+      "options": { "cellHeight": "md", "footer": { "countRows": false, "fields": "", "reducer": ["sum"], "show": false } },
+      "pluginVersion": "11.0.0",
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "edgevib-ts" },
+          "format": "table",
+          "rawSql": "SELECT device_id, compensation_active, COUNT(*) FILTER (WHERE compensation_active = true) AS samples_compensated, COUNT(*) FILTER (WHERE compensation_active = false) AS samples_uncompensated FROM environment_view WHERE $__timeFilter(time) GROUP BY device_id, compensation_active ORDER BY device_id",
+          "refId": "A"
+        }
+      ],
+      "title": "Temperature Compensation Status",
+      "type": "table"
+    }
+  ],
+  "refresh": "5s",
+  "schemaVersion": 39,
+  "tags": ["edgevib", "vibration-monitoring"],
+  "templating": {
+    "list": []
+  },
+  "time": { "from": "now-1h", "to": "now" },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "Environment Monitoring",
+  "uid": "edgevib-environment",
+  "version": 1,
+  "weekStart": ""
+}
