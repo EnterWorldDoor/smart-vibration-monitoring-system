@@ -1,0 +1,15 @@
+# Grafana Dashboard Provisioning — EdgeVib
+apiVersion: 1
+
+providers:
+  - name: 'EdgeVib'
+    orgId: 1
+    folder: 'EdgeVib'
+    folderUid: 'edgevib-folder'
+    type: file
+    disableDeletion: true
+    updateIntervalSeconds: 10
+    allowUiUpdates: true
+    options:
+      path: /etc/grafana/provisioning/dashboards
+      foldersFromFilesStructure: false
