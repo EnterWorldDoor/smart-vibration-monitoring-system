@@ -1,0 +1,10 @@
+# Device Registry — maps ESP32 uint8 dev_id to schema metadata
+# Used by data-aggregator to bridge the gap between ESP32's flat topic
+# format and the richer (site_id, device_type, device_id) schema.
+
+devices:
+  - dev_id: 1
+    site_id: "factory1"
+    device_type: "motor"
+    device_id: "de01"
+    description: "Motor DE — ADXL345 vibration + temperature + AI"

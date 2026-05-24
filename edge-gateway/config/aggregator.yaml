@@ -1,0 +1,28 @@
+# data-aggregator Configuration
+
+mqtt:
+  broker_url: "tcp://localhost:1883"
+  client_id: "edgevib-aggregator"
+  topics:
+    - "edgevib/#"                           # ESP32 current format (Pattern A)
+    - "EdgeVib/+/+/+/data/#"                # Future device format (Pattern B)
+  qos: 1
+
+database:
+  host: "localhost"
+  port: 5432
+  user: "edgevib"
+  password: "${DB_PASSWORD:-edgevib123}"
+  dbname: "edgevib_ts"
+  sslmode: "disable"
+
+dedup:
+  window_seconds: 5          # 去重窗口 (cache entry TTL)
+  key_fields:                # 去重三元组
+    - "device_id"
+    - "timestamp"
+    - "source_path"
+
+site_id: "factory1"          # 默认站点ID
+
+devices_registry_path: "devices.yaml"  # 设备注册表路径

@@ -26,6 +26,10 @@
 *.mod
 *.smod
 
+# Go module files (not Fortran)
+!go.mod
+!go.sum
+
 # Compiled Static libraries
 *.lai
 *.la
