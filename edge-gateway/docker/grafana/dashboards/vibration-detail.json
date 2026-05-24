@@ -1,0 +1,335 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": { "type": "postgres", "uid": "edgevib-ts" },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "target": { "limit": 100, "matchAny": false, "tags": [], "type": "dashboard" },
+        "type": "dashboard"
+      }
+    ]
+  },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "id": 100,
+      "panels": [],
+      "title": "",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "postgres", "uid": "edgevib-ts" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "mm/s",
+            "axisPlacement": "auto",
+            "fillOpacity": 15,
+            "gradientMode": "none",
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "lineWidth": 1,
+            "scaleDistribution": { "type": "linear" },
+            "thresholdsStyle": { "mode": "line+area" }
+          },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "green", "value": null },
+            { "color": "yellow", "value": 2.8 },
+            { "color": "red", "value": 7.1 }
+          ]},
+          "unit": "mm/s"
+        }
+      },
+      "gridPos": { "h": 14, "w": 16, "x": 0, "y": 1 },
+      "id": 1,
+      "options": { "legend": { "calcs": ["mean", "max", "lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "none" } },
+      "pluginVersion": "11.0.0",
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "edgevib-ts" },
+          "format": "time_series",
+          "rawSql": "SELECT time, rms_x AS \"RMS X\", rms_y AS \"RMS Y\", rms_z AS \"RMS Z\", overall_rms AS \"Overall RMS\" FROM vibration_view WHERE device_id = '$device_id' AND $__timeFilter(time) ORDER BY time ASC",
+          "refId": "A"
+        }
+      ],
+      "title": "RMS Vibration Trend",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "postgres", "uid": "edgevib-ts" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "green", "value": null },
+            { "color": "yellow", "value": 2.8 },
+            { "color": "red", "value": 7.1 }
+          ]},
+          "unit": "mm/s"
+        }
+      },
+      "gridPos": { "h": 3, "w": 4, "x": 16, "y": 1 },
+      "id": 2,
+      "options": { "colorMode": "background", "graphMode": "none", "justifyMode": "auto", "orientation": "auto", "textMode": "auto" },
+      "pluginVersion": "11.0.0",
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "edgevib-ts" },
+          "format": "table",
+          "rawSql": "SELECT ROUND(overall_rms::numeric, 2) FROM vibration_view WHERE device_id = '$device_id' ORDER BY time DESC LIMIT 1",
+          "refId": "A"
+        }
+      ],
+      "title": "Latest RMS",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "postgres", "uid": "edgevib-ts" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "blue", "value": null }
+          ]},
+          "unit": "Hz"
+        }
+      },
+      "gridPos": { "h": 3, "w": 4, "x": 20, "y": 1 },
+      "id": 3,
+      "options": { "colorMode": "value", "graphMode": "none", "justifyMode": "auto", "orientation": "auto", "textMode": "auto" },
+      "pluginVersion": "11.0.0",
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "edgevib-ts" },
+          "format": "table",
+          "rawSql": "SELECT ROUND(peak_frequency_hz::numeric, 1) FROM vibration_view WHERE device_id = '$device_id' ORDER BY time DESC LIMIT 1",
+          "refId": "A"
+        }
+      ],
+      "title": "Peak Freq",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "postgres", "uid": "edgevib-ts" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "blue", "value": null }
+          ]},
+          "unit": "g"
+        }
+      },
+      "gridPos": { "h": 3, "w": 4, "x": 16, "y": 4 },
+      "id": 4,
+      "options": { "colorMode": "value", "graphMode": "none", "justifyMode": "auto", "orientation": "auto", "textMode": "auto" },
+      "pluginVersion": "11.0.0",
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "edgevib-ts" },
+          "format": "table",
+          "rawSql": "SELECT ROUND(peak_amplitude_g::numeric, 4) FROM vibration_view WHERE device_id = '$device_id' ORDER BY time DESC LIMIT 1",
+          "refId": "A"
+        }
+      ],
+      "title": "Peak Amp",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "postgres", "uid": "edgevib-ts" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "blue", "value": null }
+          ]},
+          "unit": "short"
+        }
+      },
+      "gridPos": { "h": 3, "w": 4, "x": 20, "y": 4 },
+      "id": 5,
+      "options": { "colorMode": "value", "graphMode": "none", "justifyMode": "auto", "orientation": "auto", "textMode": "auto" },
+      "pluginVersion": "11.0.0",
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "edgevib-ts" },
+          "format": "table",
+          "rawSql": "SELECT jsonb_array_length(fft_peaks) FROM vibration_view WHERE device_id = '$device_id' ORDER BY time DESC LIMIT 1",
+          "refId": "A"
+        }
+      ],
+      "title": "FFT Peaks",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "postgres", "uid": "edgevib-ts" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "Hz",
+            "axisPlacement": "auto",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "lineWidth": 2,
+            "scaleDistribution": { "type": "linear" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "green", "value": null }
+          ]},
+          "unit": "Hz"
+        }
+      },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 15 },
+      "id": 6,
+      "options": { "legend": { "calcs": ["mean", "lastNotNull"], "displayMode": "list", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "single", "sort": "none" } },
+      "pluginVersion": "11.0.0",
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "edgevib-ts" },
+          "format": "time_series",
+          "rawSql": "SELECT time, peak_frequency_hz AS \"Peak Frequency\" FROM vibration_view WHERE device_id = '$device_id' AND $__timeFilter(time) ORDER BY time ASC",
+          "refId": "A"
+        }
+      ],
+      "title": "Peak Frequency Trend",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "postgres", "uid": "edgevib-ts" },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": { "type": "auto" },
+            "inspect": false
+          },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "green", "value": null }
+          ]}
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "Frequency (Hz)" },
+            "properties": [
+              { "id": "custom.cellOptions", "value": { "type": "gauge", "mode": "basic" } }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Amplitude (g)" },
+            "properties": [
+              { "id": "unit", "value": "g" },
+              { "id": "custom.cellOptions", "value": { "type": "gauge", "mode": "gradient-gauge" } }
+            ]
+          }
+        ]
+      },
+      "gridPos": { "h": 10, "w": 12, "x": 0, "y": 23 },
+      "id": 7,
+      "options": { "cellHeight": "sm", "footer": { "countRows": false, "fields": "", "reducer": ["sum"], "show": false } },
+      "pluginVersion": "11.0.0",
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "edgevib-ts" },
+          "format": "table",
+          "rawSql": "SELECT (peaks.peak->>'freq')::float AS \"Frequency (Hz)\", (peaks.peak->>'amp')::float AS \"Amplitude (g)\" FROM vibration_view v, jsonb_array_elements(v.fft_peaks) AS peaks(peak) WHERE v.device_id = '$device_id' AND v.time > NOW() - INTERVAL '5 minutes' ORDER BY v.time DESC, (peaks.peak->>'freq')::float ASC LIMIT 100",
+          "refId": "A"
+        }
+      ],
+      "title": "FFT Spectrum (Recent)",
+      "type": "table"
+    },
+    {
+      "datasource": { "type": "postgres", "uid": "edgevib-ts" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "g",
+            "axisPlacement": "auto",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "lineWidth": 2,
+            "scaleDistribution": { "type": "linear" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "green", "value": null }
+          ]},
+          "unit": "g"
+        }
+      },
+      "gridPos": { "h": 10, "w": 12, "x": 12, "y": 23 },
+      "id": 8,
+      "options": { "legend": { "calcs": ["mean", "lastNotNull"], "displayMode": "list", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "single", "sort": "none" } },
+      "pluginVersion": "11.0.0",
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "edgevib-ts" },
+          "format": "time_series",
+          "rawSql": "SELECT time, peak_amplitude_g AS \"Peak Amplitude\" FROM vibration_view WHERE device_id = '$device_id' AND $__timeFilter(time) ORDER BY time ASC",
+          "refId": "A"
+        }
+      ],
+      "title": "Peak Amplitude Trend",
+      "type": "timeseries"
+    }
+  ],
+  "refresh": "5s",
+  "schemaVersion": 39,
+  "tags": ["edgevib", "vibration-monitoring"],
+  "templating": {
+    "list": [
+      {
+        "current": { "text": "de01", "value": "de01" },
+        "datasource": { "type": "postgres", "uid": "edgevib-ts" },
+        "definition": "SELECT DISTINCT device_id FROM vibration_view ORDER BY device_id",
+        "includeAll": false,
+        "label": "Device",
+        "multi": false,
+        "name": "device_id",
+        "query": "SELECT DISTINCT device_id FROM vibration_view ORDER BY device_id",
+        "refresh": 1,
+        "regex": "",
+        "type": "query"
+      }
+    ]
+  },
+  "time": { "from": "now-1h", "to": "now" },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "Vibration Detail",
+  "uid": "edgevib-vibration-detail",
+  "version": 1,
+  "weekStart": ""
+}

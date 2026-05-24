@@ -1,0 +1,299 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": { "type": "postgres", "uid": "edgevib-ts" },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "target": { "limit": 100, "matchAny": false, "tags": [], "type": "dashboard" },
+        "type": "dashboard"
+      }
+    ]
+  },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "id": 100,
+      "panels": [],
+      "title": "",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "postgres", "uid": "edgevib-ts" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "red", "value": null },
+            { "color": "green", "value": 1 }
+          ]},
+          "unit": "short"
+        }
+      },
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 1 },
+      "id": 1,
+      "options": { "colorMode": "background", "graphMode": "none", "justifyMode": "auto", "orientation": "auto", "textMode": "auto" },
+      "pluginVersion": "11.0.0",
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "edgevib-ts" },
+          "format": "table",
+          "rawSql": "SELECT CASE WHEN MAX(nde_online) = 1 THEN 'Online' ELSE 'Offline' END FROM dual_channel_view WHERE device_id = '$device_id' AND time > NOW() - INTERVAL '5 minutes'",
+          "refId": "A"
+        }
+      ],
+      "title": "NDE Status",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "postgres", "uid": "edgevib-ts" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "green", "value": null },
+            { "color": "red", "value": 1 }
+          ]},
+          "unit": "short"
+        }
+      },
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 1 },
+      "id": 2,
+      "options": { "colorMode": "background", "graphMode": "none", "justifyMode": "auto", "orientation": "auto", "textMode": "auto" },
+      "pluginVersion": "11.0.0",
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "edgevib-ts" },
+          "format": "table",
+          "rawSql": "SELECT COALESCE(MAX(nde_errors), 0) FROM dual_channel_view WHERE device_id = '$device_id' AND time > NOW() - INTERVAL '5 minutes'",
+          "refId": "A"
+        }
+      ],
+      "title": "NDE Errors",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "postgres", "uid": "edgevib-ts" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "green", "value": null },
+            { "color": "yellow", "value": 1.5 },
+            { "color": "red", "value": 2.0 }
+          ]},
+          "unit": "short"
+        }
+      },
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 1 },
+      "id": 3,
+      "options": { "colorMode": "background", "graphMode": "none", "justifyMode": "auto", "orientation": "auto", "textMode": "auto" },
+      "pluginVersion": "11.0.0",
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "edgevib-ts" },
+          "format": "table",
+          "rawSql": "SELECT ROUND(rms_ratio::numeric, 3) FROM dual_channel_view WHERE device_id = '$device_id' ORDER BY time DESC LIMIT 1",
+          "refId": "A"
+        }
+      ],
+      "title": "RMS Ratio",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "postgres", "uid": "edgevib-ts" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "red", "value": null },
+            { "color": "yellow", "value": 0.5 },
+            { "color": "green", "value": 0.7 }
+          ]},
+          "unit": "short"
+        }
+      },
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 1 },
+      "id": 4,
+      "options": { "colorMode": "background", "graphMode": "none", "justifyMode": "auto", "orientation": "auto", "textMode": "auto" },
+      "pluginVersion": "11.0.0",
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "edgevib-ts" },
+          "format": "table",
+          "rawSql": "SELECT ROUND(spectral_similarity::numeric, 3) FROM dual_channel_view WHERE device_id = '$device_id' ORDER BY time DESC LIMIT 1",
+          "refId": "A"
+        }
+      ],
+      "title": "Similarity",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "postgres", "uid": "edgevib-ts" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "Ratio",
+            "axisPlacement": "auto",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "lineWidth": 2,
+            "scaleDistribution": { "type": "linear" },
+            "thresholdsStyle": { "mode": "line+area" }
+          },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "green", "value": null },
+            { "color": "yellow", "value": 1.5 },
+            { "color": "red", "value": 2.0 }
+          ]},
+          "unit": "short"
+        }
+      },
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 5 },
+      "id": 5,
+      "options": { "legend": { "calcs": ["mean", "max", "lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "single", "sort": "none" } },
+      "pluginVersion": "11.0.0",
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "edgevib-ts" },
+          "format": "time_series",
+          "rawSql": "SELECT time, rms_ratio AS \"RMS Ratio\" FROM dual_channel_view WHERE device_id = '$device_id' AND $__timeFilter(time) ORDER BY time ASC",
+          "refId": "A"
+        }
+      ],
+      "title": "DE/NDE RMS Ratio",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "postgres", "uid": "edgevib-ts" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "lineWidth": 2,
+            "scaleDistribution": { "type": "linear" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [],
+          "max": 1,
+          "min": 0,
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "red", "value": null },
+            { "color": "yellow", "value": 0.5 },
+            { "color": "green", "value": 0.7 }
+          ]},
+          "unit": "short"
+        }
+      },
+      "gridPos": { "h": 10, "w": 12, "x": 0, "y": 15 },
+      "id": 6,
+      "options": { "legend": { "calcs": ["mean", "lastNotNull"], "displayMode": "list", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "single", "sort": "none" } },
+      "pluginVersion": "11.0.0",
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "edgevib-ts" },
+          "format": "time_series",
+          "rawSql": "SELECT time, spectral_similarity AS \"Spectral Similarity\" FROM dual_channel_view WHERE device_id = '$device_id' AND $__timeFilter(time) ORDER BY time ASC",
+          "refId": "A"
+        }
+      ],
+      "title": "Spectral Similarity",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "postgres", "uid": "edgevib-ts" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "lineWidth": 2,
+            "scaleDistribution": { "type": "linear" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [],
+          "max": 1,
+          "min": 0,
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "green", "value": null }
+          ]},
+          "unit": "short"
+        }
+      },
+      "gridPos": { "h": 10, "w": 12, "x": 12, "y": 15 },
+      "id": 7,
+      "options": { "legend": { "calcs": ["mean", "lastNotNull"], "displayMode": "list", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "single", "sort": "none" } },
+      "pluginVersion": "11.0.0",
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "edgevib-ts" },
+          "format": "time_series",
+          "rawSql": "SELECT time, phase_coherence AS \"Phase Coherence\" FROM dual_channel_view WHERE device_id = '$device_id' AND $__timeFilter(time) ORDER BY time ASC",
+          "refId": "A"
+        }
+      ],
+      "title": "Phase Coherence",
+      "type": "timeseries"
+    }
+  ],
+  "refresh": "5s",
+  "schemaVersion": 39,
+  "tags": ["edgevib", "vibration-monitoring"],
+  "templating": {
+    "list": [
+      {
+        "current": { "text": "de01", "value": "de01" },
+        "datasource": { "type": "postgres", "uid": "edgevib-ts" },
+        "definition": "SELECT DISTINCT device_id FROM dual_channel_view ORDER BY device_id",
+        "includeAll": false,
+        "label": "Device",
+        "multi": false,
+        "name": "device_id",
+        "query": "SELECT DISTINCT device_id FROM dual_channel_view ORDER BY device_id",
+        "refresh": 1,
+        "type": "query"
+      }
+    ]
+  },
+  "time": { "from": "now-1h", "to": "now" },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "Dual Channel (DE/NDE)",
+  "uid": "edgevib-dual-channel",
+  "version": 1,
+  "weekStart": ""
+}
