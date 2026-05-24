@@ -1,0 +1,22 @@
+# rs232-gateway Configuration
+
+serial:
+  port: "/dev/ttyUSB0"      # USB-to-RS232 device
+  baudrate: 115200
+  data_bits: 8
+  stop_bits: 1
+  parity: "none"
+  timeout_ms: 100
+
+protocol:
+  header: 0xAA55
+  tail: 0x0D
+  crc: "CRC16-MODBUS"       # Reuses existing protocol stack
+
+mqtt:
+  broker_url: "tcp://localhost:1883"
+  client_id: "edgevib-rs232-gateway"
+  publish_topic_prefix: "EdgeVib/factory1/motor"
+
+heartbeat:
+  peer_timeout_ms: 3000      # ESP32 heartbeat timeout → F407 switches to UART5
