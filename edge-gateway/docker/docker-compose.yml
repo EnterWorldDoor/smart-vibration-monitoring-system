@@ -69,6 +69,21 @@ services:
       - mosquitto
       - timescaledb
 
+  # === inference-engine (Python ONNX Runtime) ===
+  inference-engine:
+    image: edgevib-inference-engine:latest
+    container_name: edgevib-inference-engine
+    volumes:
+      - ../config/inference.yaml:/app/config.yaml:ro
+      - ../services/inference-engine/src/models:/app/src/models:ro
+      - ../services/inference-engine/src:/app/src:rw
+    restart: unless-stopped
+    networks:
+      - edgevib-net
+    depends_on:
+      - mosquitto
+      - timescaledb
+
 volumes:
   mosquitto_data:
   mosquitto_log:

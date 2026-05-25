@@ -138,13 +138,224 @@ EdgeVib/{site_id}/{device_type}/{device_id}/{data_type}
   - **数据模型**: 极简两层。解析层只从 topic 提取 `site_id/device_type/device_id/data_type` + 从 JSON 提取 `timestamp_ms` 做去重。JSON payload 以 `json.RawMessage` 全透传进 JSONB 列，不做解构。避免与 ESP32 JSON schema 耦合
   - **测试策略**: 单元测试 (mock `Subscriber`/`Writer` 接口，测 topic 解析 + 去重逻辑) + 集成测试 (`docker compose up mosquitto timescaledb`，paho 客户端发模拟消息验证端到端)。去重逻辑纯函数无依赖，优先单测覆盖
   - **Module 路径**: `edgevib/data-aggregator` (简洁，Docker 内编译无外部引用)。入口 `cmd/aggregator/main.go`，internal 分包 `mqtt`/`topic`/`dedup`/`store`/`model`/`health`
-- **rs232-gateway** (C): USART3/RS232 串口守护进程。复用现有 CRC16-MODBUS 协议解析，F407 直连备份通道。通过 systemd 自启动
+- **rs232-gateway** (C): UART5/RS232 串口守护进程。复用现有 CRC16-MODBUS 协议解析，F407 直连备份通道。通过 systemd 自启动
 - **edge-router** (Go): 多设备路由转发，模拟同级节点数据交换
 
 ### AI 推理层
 - **inference-engine** (Python/ONNX Runtime): 复杂模型 — 趋势预测、剩余寿命(RUL)、多设备聚合分析
 - **llm-analyzer** (Python/llama.cpp): 本地大模型故障报告生成，提示词模板驱动
 - **vision-service** (Python/OpenCV + V4L2): USB 摄像头定时拍照 + 存档，V4L2 DMA 零拷贝采集。后期扩展 OpenCV 运动检测/异常识别
+
+#### inference-engine 详细设计 (2026-05-24)
+
+##### 职责边界
+
+inference-engine **不是训练模型的**。模型训练在 Edge-AI PC (`edge-ai/`) 上完成。inference-engine 的职责：
+1. 加载 PC 端预转换的 ONNX 模型
+2. 在 Orange Pi 上用 ONNX Runtime 做推理（CPU 或 NPU）
+3. 消费 TimescaleDB 历史数据做批量推理
+4. 结果写回 TimescaleDB / MQTT
+
+与 ESP32 `ai_service.c` 的互补关系：
+| 维度 | ESP32 ai_service | Orange Pi inference-engine |
+|------|------------------|---------------------------|
+| 模型 | TFLite Micro (CNN-LSTM, <200KB) | ONNX Runtime (趋势预测/RUL, 更大) |
+| 推理类型 | 实时 4 分类 (normal/imbalance/misalignment/bearing_fault) | 批量趋势分析 + 剩余寿命 + 多设备聚合 |
+| 输入 | 32×24 特征窗口 (实时特征提取) | TimescaleDB 查询历史窗口 |
+| 延迟 | <80ms 实时 | 10s 间隔批量 |
+| 硬件 | Xtensa LX7 双核 240MHz | 全志 A733 (2×A76 + 6×A55) + NPU 3TOPS |
+
+##### 数据输入路径 (决策 1)
+
+**混合模式**：定时从 TimescaleDB 读数据做趋势/RUL 分析 + MQTT 订阅紧急事件触发即时推理。
+
+```
+主路径: TimescaleDB (vibration_view 等 VIEW) → 定时查询(10s) → ONNX 推理 → 结果写入 TimescaleDB
+触发路径: MQTT EdgeVib/+/+/+/status/health (异常事件) → 即时触发推理
+```
+
+选择理由：
+- 与 data-aggregator 无功能重叠（aggregator 只做透传写入，inference-engine 做分析）
+- TimescaleDB 已有 vibration_view 等 VIEW，无需重复解析 JSON
+- 紧急告警不等待 10s 轮询周期
+
+##### ONNX 模型转换流水线 (决策 2)
+
+**Edge-AI PC 端预转换**（主路径），不在 Orange Pi 上做 Keras → ONNX 转换。
+
+```
+Edge-AI PC: Keras .h5 → tf2onnx → .onnx → scp/rsync → Orange Pi
+Orange Pi:  ONNX Runtime 加载 .onnx → 推理
+```
+
+选择理由：
+- PC 端已有完整 TensorFlow 训练管线，加一个 ONNX 导出脚本即可
+- Orange Pi Docker 镜像保持轻量（`python:3.11-slim` + `onnxruntime`，不含 TensorFlow）
+- 避免 4GB 边缘设备上装 ~1GB TensorFlow 的镜像膨胀
+
+##### 特征维度
+
+inference-engine 与 ESP32 共享相同的 24 维特征向量定义：
+```
+[rms_x, rms_y, rms_z, overall_rms, peak_freq_x, peak_amp_x,
+ skewness_x, kurtosis_x, crest_factor_x,
+ band_energy_x[0..7],
+ peak_freq_y, peak_amp_y, crest_factor_y,
+ peak_freq_z, peak_amp_z, crest_factor_z,
+ temperature_c]
+```
+来源：`ai_service.c:push_feature_vector()` 与 `ai_service.h:AI_NUM_FEATURES=24`
+
+##### 特征来源 (决策 3)
+
+**直接用 ESP32 预提取特征**（通过 TimescaleDB VIEWs），不在 Orange Pi 端重新做 DSP。
+
+```
+ESP32: raw ADC → FFT/RMS/Peak → 特征向量 → MQTT JSON → data-aggregator → TimescaleDB JSONB
+Orange Pi: vibration_view (JSONB 解构) → 时间序列特征 → ONNX 模型推理
+```
+
+选择理由：
+- ESP32 每 2s 发送的 MQTT JSON 中已包含 RMS/峰值频率/FFT 频带能量等特征，不发送原始 400Hz ADC 波形
+- `vibration_view` 已从 JSONB 解构出 `rms_x/y/z, overall_rms, peak_frequency_hz, peak_amplitude_g, fft_peaks` 等字段
+- 趋势预测/RUL 分析使用 RMS 走向和频率漂移即可，不需要原始波形
+- Autoencoder 异常检测如需原始数据重构，后续可要求 ESP32 新增 raw data topic（Phase 2）
+
+##### MVP 范围 (决策 4)
+
+**统计趋势 + Autoencoder 异常检测** 同时上线。
+
+**Phase 1 (MVP)**:
+- **统计趋势分析** (Python numpy/scipy，无需 ONNX): RMS 趋势斜率、频带能量漂移、温度-振动相关性、DE/NDE RMS ratio
+- **Autoencoder 异常检测** (ONNX Runtime): 24 维特征向量 → 重构误差 → 异常分数，捕捉训练数据中未见的故障模式
+
+**Phase 2** (后续):
+- RUL 剩余寿命预测 (ONNX)：需额外训练数据（运行至故障的完整生命周期数据）
+- 多设备对比分析
+
+现有模型资产：`edge-ai/models/saved_models/autoencoder_best.h5` 已训练，可直接 tf2onnx 转换部署。
+
+##### 多设备聚合策略 (决策 5)
+
+**分层聚合**：设备级独立推理 → Python 层 DE/NDE 对比 → 电机级健康评分。
+
+```
+Layer 1 (设备级): DE 端独立统计趋势 + Autoencoder 异常检测
+                 NDE 端独立统计趋势 + Autoencoder 异常检测
+Layer 2 (电机级): Python 代码做 DE/NDE 对比 — RMS ratio 趋势、频谱相似度、相位一致性
+                 加权计算电机综合健康评分
+Layer 3 (车间级): 多台电机健康排序 (Phase 2)
+```
+
+选择理由：
+- 设备级独立推理复用同一个 24 维 Autoencoder 模型，不引入 48 维联合模型
+- `dual_channel_view` 已提供 RMS ratio 和 spectral_similarity，Python 直接消费
+- 电机综合健康评分逻辑在 Python 代码中，可调且不依赖 ML
+
+##### 结果输出策略 (决策 6)
+
+**双写**：TimescaleDB 存全量 + MQTT 发关键发现。
+
+```
+inference-engine
+  ├── TimescaleDB: inference_results 表 (全量持久化)
+  │    列: time, site_id, device_type, device_id,
+  │         anomaly_score, health_score, trend_slope_rms,
+  │         de_nde_rms_ratio, model_name, model_version,
+  │         inference_time_ms, details(JSONB)
+  │    Grafana 直接 SQL 查询 → 趋势图/历史对比
+  │
+  └── MQTT: EdgeVib/{site_id}/inference/{device_id}/ai/report (关键发现)
+       内容: { anomaly_detected, health_score, trend_direction, summary }
+       QOS 1, Retained=false
+       用途: 即时告警通知、llm-analyzer 触发报告生成
+```
+
+选择理由：TimescaleDB 保证数据持久可查询，MQTT 解耦即时通知消费方。
+
+##### MQTT 触发条件 (决策 7)
+
+**AI 分类异常 + RMS 超阈值** 即时触发推理，绕过 10s 轮询。
+
+| 触发条件 | MQTT 来源 | 动作 |
+|----------|-----------|------|
+| AI 分类 = bearing_fault 或 confidence < 0.85 (fallback) | `.../data/sensor` JSON 中 `ai_class_id`/`cascade_source` | Autoencoder 二次验证 + 趋势回溯 |
+| overall_rms > 7.1 mm/s (ISO 10816 Zone D) | `.../data/sensor` JSON 中 `overall_rms` | 回溯过去 5 分钟数据，判断恶化速率 |
+
+设备离线不触发推理（无新数据），只记录状态变更日志。
+
+订阅 topic: `EdgeVib/+/+/+/data/sensor` (QoS 1)，解析 JSON 中 `ai_class_id`、`cascade_source`、`overall_rms` 字段做触发判断。
+
+##### ONNX Runtime 后端 (决策 8)
+
+**CPU (OpenBLAS)**，Docker 镜像保持 `python:3.11-slim` + `libopenblas0`。
+
+选择理由：
+- Autoencoder 输入 24 维，推理只需几次矩阵乘法，CPU 微秒级完成
+- Allwinner VIP NPU 驱动在 Ubuntu 22.04 上可用性未知，ONNX Runtime 无官方支持
+- NPU 留到 Phase 2 大模型（RUL、GGUF）时再评估
+
+##### 统计趋势指标 (决策 9)
+
+对每个设备，维护过去 30 点（≈1 分钟 @ 2s 间隔）滑动窗口，每 10s 更新：
+
+| 指标 | 计算方法 | 预警阈值 | 说明 |
+|------|----------|----------|------|
+| RMS 趋势斜率 | overall_rms 线性回归斜率 | > 0.05 mm/s/点 (上升) | 振动持续恶化 |
+| 峰值频率漂移 | peak_frequency 标准差 | > 5 Hz | 故障模式可能改变 |
+| 温度-振动相关性 | RMS vs 温度 Pearson r | > 0.7 | 热膨胀导致的振动 |
+| DE/NDE RMS Ratio | DE_rms / NDE_rms | 偏离 1.0 > 30% | 可能不对中 |
+| 波峰因子趋势 | crest_factor 线性回归斜率 | > 0.02/点 (上升) | 轴承早期缺陷 |
+| 频带能量迁移 | 高频段(200-400Hz)能量占比趋势 | > 5%/天 | 轴承磨损进展 |
+
+##### 设计决策汇总
+
+| # | 决策项 | 选择 |
+|---|--------|------|
+| 1 | 数据输入路径 | TimescaleDB 轮询 + MQTT 触发 |
+| 2 | ONNX 转换位置 | Edge-AI PC 端预转换 |
+| 3 | 特征来源 | ESP32 预提取特征 (via VIEWs) |
+| 4 | MVP 范围 | 统计趋势 + Autoencoder 异常检测 |
+| 5 | 多设备聚合 | 分层: 设备→电机→车间 |
+| 6 | 结果输出 | TimescaleDB 全量 + MQTT 关键发现 |
+| 7 | MQTT 触发 | AI 异常 + RMS 超阈值 |
+| 8 | ONNX 后端 | CPU (OpenBLAS) |
+| 9 | 统计指标 | 6 项指标, 30 点滑动窗口 |
+
+##### 下一步实现
+
+```
+services/inference-engine/
+├── Dockerfile                        — 已有骨架, 需添加 onnxruntime
+├── requirements.txt                  — numpy, scipy, onnxruntime, paho-mqtt, psycopg2, pyyaml
+├── src/
+│   ├── __init__.py
+│   ├── __main__.py                   — 入口: 加载配置 → 初始化 → 主循环
+│   ├── config.py                     — YAML 配置加载
+│   ├── db/
+│   │   ├── __init__.py
+│   │   ├── client.py                 — TimescaleDB 连接池 + 查询(VIEWs) + 写入(inference_results)
+│   │   └── schema.sql                — inference_results 表 DDL
+│   ├── mqtt/
+│   │   ├── __init__.py
+│   │   ├── subscriber.py             — MQTT 订阅 + 触发判断 (AI异常/RMS超阈值)
+│   │   └── publisher.py              — MQTT 发布推理报告
+│   ├── inference/
+│   │   ├── __init__.py
+│   │   ├── autoencoder.py            — ONNX Runtime 加载 + 推理 + 重构误差
+│   │   ├── trend_analysis.py         — 统计趋势 (RMS斜率/频漂/波峰因子/频带迁移)
+│   │   └── aggregation.py            — 设备级→电机级→车间级聚合
+│   ├── health.py                     — 自身健康上报 (MQTT)
+│   └── models/                       — ONNX 模型存放目录 (gitignored, 部署时拷贝)
+├── config/
+│   └── inference.yaml                — 已存在, 需更新
+└── tests/
+    ├── test_autoencoder.py
+    ├── test_trend_analysis.py
+    └── test_aggregation.py
+```
+
+同时 Edge-AI PC 端 (`edge-ai/deployment/`) 需新增 ONNX 转换脚本。
 
 ### 应用层
 - **Grafana**: 实时振动频谱 + 设备健康仪表盘，预置 JSON dashboard。支持 HDMI 直连显示器做工厂现场看板 (Kiosk 全屏模式)
@@ -389,3 +600,63 @@ ssh orangepi@192.168.1.1 "docker exec -i edgevib-timescaledb psql -U edgevib -d 
 ssh orangepi@192.168.1.1 "cd /opt/edge-gateway && pip3 install -r tests/integration/requirements-test.txt"
 ssh orangepi@192.168.1.1 "cd /opt/edge-gateway/tests/integration && TEST_DB_HOST=localhost python3 -m pytest test_dashboard_views.py -v"
 ```
+
+## rs232-gateway 设计详情 (2026-05-24)
+
+### 硬件链路
+
+```
+F407(UART5: PC12 TX / PD2 RX, 115200 8N1)
+    → TPT3232E (TTL→RS232 电平转换)
+    → DB9 母头
+    → USB-RS232 转换器 (CH340/FT232)
+    → Orange Pi 4 Pro (/dev/ttyUSB0)
+```
+
+### 软件架构决策
+
+| 决策项 | 选择 | 原因 |
+|--------|------|------|
+| F407 端 UART 口 | **UART5** (PC12/PD2) | 已有 NVIC 中断使能; 不与 I2C2/SPI2 复用冲突 |
+| 备份通道承载数据 | **全量帧** (CMD 0x04/0x06/0x07/0x10/0x17/0x18) | 115200bps 带宽充足; F407 端不做过滤降低复杂度; 下游按 topic 区分主/备来源自行去重 |
+
+| 协议解析方案 | **移植 ESP32 protocol.c 核心解析器** (10 状态机 + CRC16-MODBUS) | 与现网验证逻辑 100% 一致; 剥离 FreeRTOS 依赖 (Mutex/Semaphore → pthread); 保留帧 dump 调试 |
+
+| MQTT 客户端库 | **libmosquitto** (Mosquitto 自带 C 库) | 已在 Orange Pi 可用; publish-only 场景功能足够; 自带自动重连; ~100KB 零依赖 |
+| MQTT topic 策略 | **相同 topic + JSON 内加 `"source": "rs232"`** (ESP32 侧对称加 `"source": "esp32"`) | data-aggregator JSONB 透传自动保留; TimescaleDB 可溯源; Grafana 无需改动 |
+| F407 主/备切换 | **UART4 任一台法帧=存活; 3s 无帧→切 UART5; 5s 连续有帧→切回; 静默时不发** | 滞回 5s>3s 防乒乓; 接受切换窗口内短暂丢帧 |
+| 错误恢复 | **进程永不因可恢复错误退出; open 失败每 2s 重试; read ENODEV 则 close→重试; 无数据不报错** | 让 systemd 只处理致命崩溃; libmosquitto 自带重连 |
+| systemd unit | **Type=simple, Restart=always, RestartSec=5s, User=orangepi, Group=dialout** | 前台运行; 自动拉起; dialout 组访问串口; 日志走 journald |
+| 项目结构 + 构建 | **6 源文件 + Makefile + libmosquitto + libyaml** (见下方源码树) | protocol.c 零依赖可单测; 配置解析与 aggregator 一致用 YAML |
+| 配置解析 | **libyaml** (libyaml-dev) | 与 data-aggregator YAML 惯例一致; config/rs232-gateway.yaml 已存在 |
+
+### 源码树
+
+```
+services/rs232-gateway/
+├── Makefile                          — gcc -Wall -Wextra -O2 + -lmosquitto -lyaml
+├── src/
+│   ├── main.c                        — 入口 + 信号处理 + 主循环 (~150 行)
+│   ├── serial.c / serial.h           — POSIX 串口 open/read/close (2s 重试) (~100 行)
+│   ├── protocol.c / protocol.h       — CRC16 + 10 状态机 (ESP32 protocol.c 移植) (~400 行)
+│   ├── mqtt_pub.c / mqtt_pub.h       — libmosquitto 薄封装 (~80 行)
+│   └── proto_to_json.c / proto_to_json.h — 协议帧→JSON + MQTT topic 路由 (~150 行)
+├── systemd/
+│   └── rs232-gateway.service
+└── tests/
+    └── test_protocol.c               — CRC16 + 状态机单元测试
+```
+
+### F407 端待实现
+
+- UART5 发送函数 (`HAL_UART_Transmit(&huart5, ...)`)
+- ESP32 存活检测 (UART4 任一 CRC 合法帧 = alive)
+- 3s/5s 滞回切换状态机
+- UART5 备份模式下发送全量协议帧
+- 系统状态帧 (CMD 0x07) 中增加 `backup_active` 标志位
+
+### 待决策
+
+- 错误恢复: USB-RS232 拔出/松动后如何自动恢复
+- systemd unit 设计: 重启策略、日志轮转、依赖关系
+- Orange Pi 端项目结构: 独立 Makefile + 源文件组织

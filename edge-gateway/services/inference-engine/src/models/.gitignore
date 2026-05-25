@@ -1,0 +1,3 @@
+*.onnx
+*.h5
+!autoencoder_metadata.json
