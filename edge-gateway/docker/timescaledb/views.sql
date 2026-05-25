@@ -107,3 +107,48 @@ SELECT
     (payload #>> '{dev_id}')::int                          AS esp32_dev_id
 FROM latest
 WHERE rn = 1;
+
+-- ============================================================================
+-- feature_vector_view: 24-dim feature vector for Autoencoder inference
+-- Extracts the "features" array from ESP32 MQTT JSON (added 2026-05-25).
+-- Feature layout matches ai_service.c push_feature_vector():
+--   [0-3]   rms_x/y/z, overall_rms
+--   [4-8]   peak_freq_x, peak_amp_x, skewness_x, kurtosis_x, crest_factor_x
+--   [9-16]  band_energy_x[0..7]
+--   [17-19] peak_freq_y, peak_amp_y, crest_factor_y
+--   [20-22] peak_freq_z, peak_amp_z, crest_factor_z
+--   [23]    temperature_c
+-- ============================================================================
+CREATE OR REPLACE VIEW feature_vector_view AS
+SELECT
+    time,
+    site_id,
+    device_type,
+    device_id,
+    (payload #>> '{features,0}')::float  AS feat_rms_x,
+    (payload #>> '{features,1}')::float  AS feat_rms_y,
+    (payload #>> '{features,2}')::float  AS feat_rms_z,
+    (payload #>> '{features,3}')::float  AS feat_overall_rms,
+    (payload #>> '{features,4}')::float  AS feat_peak_freq_x,
+    (payload #>> '{features,5}')::float  AS feat_peak_amp_x,
+    (payload #>> '{features,6}')::float  AS feat_skewness_x,
+    (payload #>> '{features,7}')::float  AS feat_kurtosis_x,
+    (payload #>> '{features,8}')::float  AS feat_crest_factor_x,
+    (payload #>> '{features,9}')::float  AS feat_band_energy_x_0,
+    (payload #>> '{features,10}')::float AS feat_band_energy_x_1,
+    (payload #>> '{features,11}')::float AS feat_band_energy_x_2,
+    (payload #>> '{features,12}')::float AS feat_band_energy_x_3,
+    (payload #>> '{features,13}')::float AS feat_band_energy_x_4,
+    (payload #>> '{features,14}')::float AS feat_band_energy_x_5,
+    (payload #>> '{features,15}')::float AS feat_band_energy_x_6,
+    (payload #>> '{features,16}')::float AS feat_band_energy_x_7,
+    (payload #>> '{features,17}')::float AS feat_peak_freq_y,
+    (payload #>> '{features,18}')::float AS feat_peak_amp_y,
+    (payload #>> '{features,19}')::float AS feat_crest_factor_y,
+    (payload #>> '{features,20}')::float AS feat_peak_freq_z,
+    (payload #>> '{features,21}')::float AS feat_peak_amp_z,
+    (payload #>> '{features,22}')::float AS feat_crest_factor_z,
+    (payload #>> '{features,23}')::float AS feat_temperature_c
+FROM sensor_data
+WHERE payload ? 'features'
+  AND source_path = 'mqtt';

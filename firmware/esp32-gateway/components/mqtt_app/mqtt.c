@@ -43,6 +43,7 @@
 #include "ringbuf.h"
 #include "config_manager.h"
 #include "dsp.h"
+#include "ai_service.h"
 #include "esp_log.h"
 #include "esp_wifi.h"
 #ifdef CONFIG_ESP_TLS_ENABLED
@@ -330,6 +331,25 @@ static int serialize_analysis_result_to_json(const struct analysis_result *resul
             (double)g_nde_dual.phase_coherence,
             (unsigned int)g_nde_dual.nde_online,
             (unsigned int)g_nde_dual.nde_error_count);
+    }
+
+    /* 24-dim feature vector for Edge-AI Autoencoder inference */
+    {
+        float features[24];
+        if (ai_service_get_latest_features(features) == 0) {
+            pos += snprintf(buffer + pos, buf_size - pos,
+                ",\"features\":[%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,"
+                "%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,"
+                "%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f]",
+                (double)features[0],  (double)features[1],  (double)features[2],
+                (double)features[3],  (double)features[4],  (double)features[5],
+                (double)features[6],  (double)features[7],  (double)features[8],
+                (double)features[9],  (double)features[10], (double)features[11],
+                (double)features[12], (double)features[13], (double)features[14],
+                (double)features[15], (double)features[16], (double)features[17],
+                (double)features[18], (double)features[19], (double)features[20],
+                (double)features[21], (double)features[22], (double)features[23]);
+        }
     }
 
     pos += snprintf(buffer + pos, buf_size - pos, "}");
