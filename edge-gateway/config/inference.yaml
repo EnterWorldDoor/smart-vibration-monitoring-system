@@ -1,0 +1,45 @@
+# inference-engine Configuration — Autoencoder MVP
+# Matches edge-gateway/CONTEXT.md Decisions 1-9
+
+model:
+  path: "models/autoencoder.onnx"
+  metadata_path: "models/autoencoder_metadata.json"
+  backend: "CPU"             # ONNX Runtime CPU (OpenBLAS). NPU reserved for Phase 2.
+  input_dim: 24
+
+db:
+  host: "timescaledb"
+  port: 5432
+  user: "edgevib"
+  password: "edgevib123"
+  dbname: "edgevib_ts"
+  sslmode: "disable"
+
+mqtt:
+  broker: "mosquitto"
+  port: 1883
+  client_id: "edgevib-inference-engine"
+  qos: 1
+  subscribe_topic: "EdgeVib/+/+/+/data/sensor"
+  publish_topic: "EdgeVib/{site_id}/inference/{device_id}/ai/report"
+
+trigger:
+  rms_threshold: 7.1           # mm/s, ISO 10816 Zone D (alarm)
+  bearing_fault_trigger: true   # Immediate inference on bearing_fault
+  low_confidence_trigger: 0.85  # Trigger if AI confidence falls below this
+  lookback_minutes: 5           # Retrospective data window on trigger
+
+trend:
+  window_size: 30               # Data points in sliding window (~1 min @ 2s interval)
+  rms_slope_warn: 0.05          # mm/s per point linear regression slope
+  freq_drift_warn: 5.0          # Hz std deviation
+  temp_correlation_warn: 0.7    # Pearson |r| threshold
+  de_nde_ratio_warn: 0.3        # ±30% deviation from 1.0
+  crest_factor_slope_warn: 0.02 # Crest factor slope per point
+  band_energy_shift_warn: 0.05  # 5% high-frequency energy share increase
+
+schedule:
+  inference_interval_s: 10      # Main cycle interval
+  health_report_interval_s: 30  # Health telemetry interval
+
+site_id: "factory1"
