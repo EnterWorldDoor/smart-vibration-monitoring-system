@@ -101,6 +101,23 @@ services:
       - mosquitto
       - timescaledb
 
+  # === API Server (Go REST + WebSocket) ===
+  api-server:
+    build:
+      context: ../services/api-server
+      dockerfile: Dockerfile
+    container_name: edgevib-api-server
+    ports:
+      - "8080:8080"
+    volumes:
+      - ../config/api-server.yaml:/app/config.yaml:ro
+    restart: unless-stopped
+    networks:
+      - edgevib-net
+    depends_on:
+      - mosquitto
+      - timescaledb
+
 volumes:
   mosquitto_data:
   mosquitto_log:

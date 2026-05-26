@@ -555,7 +555,126 @@ inference-engine (10s cycle)
 | `requirements.txt` | llama-cpp-python, psycopg2-binary, paho-mqtt, pyyaml, structlog |
 | `tests/` | 单元测试: prompt 模板填充、去重逻辑、report_builder 数据组装 |
 
-## OPC UA 集成 (可选增强)
+## API Server 设计
+
+### 决策 1: 语言与框架 (2026-05-26)
+
+**选择**: Go（编译为单二进制部署）
+
+**Why**: 内存预算紧张（Orange Pi 4GB，仅 600MB headroom）。Go 编译二进制 ~50MB vs Python/FastAPI ~200MB；`jackc/pgx` 已在 data-aggregator 验证，性能优于 psycopg2；单二进制 `scp` 部署，无需 Docker 依赖链路；与 data-aggregator 共享 pgxpool + YAML 配置 + 结构化日志模式。
+
+**Alternatives considered**:
+- Python/FastAPI: 开发效率高、async WebSocket 原生支持，但 Python 运行时 + uvicorn + psycopg2 内存开销约 150MB 额外成本，在 600MB headroom 约束下风险较大
+
+### 决策 2: HTTP 路由库 (2026-05-26)
+
+**选择**: `chi` (github.com/go-chi/chi/v5)
+
+**Why**: 标准 `net/http` Handler 接口，零侵入；middleware 链（logging/recovery/CORS）开箱即用；路由分组天然支持 API 版本化；仅 ~50KB，无额外依赖。Go 1.22 `http.ServeMux` 虽支持路径参数但缺少 middleware chaining 和 route grouping。
+
+**Alternatives considered**:
+- `gin`: 最流行但 `gin.Context` 与 `net/http` 不兼容，后续扩展受限
+- 纯 `net/http` (Go 1.22): 缺少 middleware chaining，路由分组需手写
+
+### 决策 3: REST 资源建模 (2026-05-26)
+
+**URL 规范**: `sites/{site_id}/devices/{device_type}/{device_id}/...` 层级路径，与 MQTT topic `EdgeVib/{site_id}/{device_type}/{device_id}/...` 结构一致。
+
+**端点清单**:
+
+| 方法 | 路径 | 用途 |
+|------|------|------|
+| `GET` | `/api/v1/health` | 系统健康（DB 连通性、MQTT broker 状态、各服务心跳汇总） |
+| `GET` | `/api/v1/sites` | 所有站点列表（`SELECT DISTINCT site_id FROM sensor_data`） |
+| `GET` | `/api/v1/sites/{site_id}/overview` | 站点下所有设备当前状态概览（`device_status_view` 聚合） |
+| `GET` | `/api/v1/sites/{site_id}/devices` | 站点下设备列表 |
+| `GET` | `/api/v1/sites/{site_id}/devices/{device_type}/{device_id}` | 单个设备当前状态 |
+| `GET` | `/api/v1/sites/{site_id}/devices/{device_type}/{device_id}/sensor` | 振动时序数据（`vibration_view`, `?from=&to=` 必传, `?limit=&offset=`） |
+| `GET` | `/api/v1/sites/{site_id}/devices/{device_type}/{device_id}/environment` | 环境数据（`environment_view`, `?from=&to=` 必传） |
+| `GET` | `/api/v1/sites/{site_id}/devices/{device_type}/{device_id}/ai-reports` | AI 推理报告（`ai_reports`, `?from=&to=&severity=&limit=`） |
+| `GET` | `/api/v1/sites/{site_id}/devices/{device_type}/{device_id}/llm-reports` | LLM 故障报告（`llm_reports`, `?from=&to=&severity=&limit=`） |
+| `WS` | `/api/v1/ws/events` | 实时事件推送（inference WARNING/CRITICAL、LLM 报告完成） |
+
+**设计约束**:
+- API 纯只读，不提供写入端点。数据写入统一经过 MQTT → data-aggregator → TimescaleDB 链路
+- 时序类端点（sensor/environment）`?from=&to=` 必传，不做默认时间窗口。避免无范围查询打爆内存
+- 报告类端点 `?limit=` 默认 20，上限 100
+- 所有端点读 VIEW 不读裸 JSONB，VIEW 层已做解构，API 层不做重复提取
+
+### 决策 4: 数据访问与 WebSocket 实时推送 (2026-05-26)
+
+**TimescaleDB 访问**: `pgxpool` 直连只读。与 data-aggregator 复用同一套 `jackc/pgx` 模式，连接池配置偏只读（pool_max_conns=5, 更短超时）。SQL 直接查 VIEW，不用 ORM。
+
+**WebSocket 实时推送**: API Server 作为 MQTT subscriber（paho Go 客户端），订阅以下 topic：
+
+| MQTT Topic | 事件类型 | 用途 |
+|------------|----------|------|
+| `EdgeVib/+/inference/+/ai/report` | `ai_alert` | inference-engine WARNING/CRITICAL 即时推送 |
+| `EdgeVib/+/llm/+/report` | `llm_report` | LLM 故障报告完成通知 |
+| `EdgeVib/+/+/+/status/health` | `device_status` | 设备上下线状态变更 |
+
+MQTT 消息到达 → 内部 `chan Event` → WebSocket hub → broadcast 所有客户端。不做客户端过滤（事件频率每分钟几条），不做历史回放（历史数据走 REST）。
+
+**降级策略**:
+- DB 不可用 → REST 端点返回 503，进程不退出，自动重连
+- MQTT 不可用 → WS 端点返回 503，REST 端点正常工作
+- 两个通道独立降级，互不影响
+
+### 决策 5: 认证与安全 (2026-05-26)
+
+**选择**: 默认无认证，预留可选 API Key middleware
+
+**Why**: API Server 运行在扁平工业 LAN (192.168.1.0/24)，NAT 后面无公网暴露。现有 Mosquitto/TimescaleDB/Grafana 均为内网信任模型，单点加认证不改变威胁面。
+
+预留 `X-API-Key` header 校验 middleware，配置文件 `auth.enabled: false` 默认关闭。未来如需端口转发或云端上行，一行配置即可开启。
+
+---
+
+### 决策 6: 部署模式 (2026-05-26)
+
+**选择**: Docker 容器（multi-stage 构建，`golang:1.22-alpine` → `alpine:3.19`）
+
+**Why**: 与 data-aggregator/inference-engine/llm-analyzer 统一编排在 docker-compose 中；最终镜像 ~25MB（Go 静态二进制 + alpine）；docker network 内部 DNS 访问 timescaledb/mosquitto；`docker logs` 统一日志采集。
+
+对外端口: `8080:8080`。
+
+### 决策 7: 配置与模块结构 (2026-05-26)
+
+**配置文件**: `config/api-server.yaml`，YAML 格式，`gopkg.in/yaml.v3` 解析。包含 server/timescaledb/mqtt/auth/log 五个 section，与 data-aggregator 惯例一致。
+
+**源码树**:
+
+```
+services/api-server/
+├── Dockerfile                          — multi-stage: golang:1.22-alpine → alpine:3.19
+├── go.mod                              — module edgevib/api-server
+├── go.sum
+├── cmd/server/main.go                  — 入口: 配置加载 → pgxpool → MQTT subscriber → chi router → http.Server
+└── internal/
+    ├── config/config.go                — YAML 配置 struct
+    ├── db/client.go                    — pgxpool + 查询方法 (QueryOverview, QuerySensorData, QueryAIReports, ...)
+    ├── mqtt/subscriber.go              — paho MQTT 订阅 → chan Event → WS hub
+    ├── ws/
+    │   ├── hub.go                      — WebSocket hub (register/unregister/broadcast)
+    │   └── client.go                   — 单连接 read/write pump
+    ├── handler/
+    │   ├── health.go                   — GET /api/v1/health
+    │   ├── sites.go                    — GET /api/v1/sites, /sites/{id}/overview, /sites/{id}/devices
+    │   ├── devices.go                  — GET .../devices/{type}/{id}, /sensor, /environment
+    │   ├── reports.go                  — GET .../ai-reports, /llm-reports
+    │   └── ws.go                       — WS /api/v1/ws/events
+    └── middleware/
+        ├── logging.go                  — 请求日志 (method, path, status, duration)
+        ├── recovery.go                 — panic recovery
+        └── auth.go                     — 可选 X-API-Key 校验
+
+config/
+└── api-server.yaml                     — 服务配置
+```
+
+共 12 个 .go 文件，与 data-aggregator 规模相当。
+
+---
 
 - **库**: open62541 (C, LGPL)
 - **角色**: OPC UA Server 运行在 Orange Pi 上
