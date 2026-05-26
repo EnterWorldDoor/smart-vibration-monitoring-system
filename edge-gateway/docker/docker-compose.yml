@@ -84,6 +84,23 @@ services:
       - mosquitto
       - timescaledb
 
+  # === llm-analyzer (Python llama.cpp) ===
+  llm-analyzer:
+    image: edgevib-llm-analyzer:latest
+    container_name: edgevib-llm-analyzer
+    volumes:
+      - ../config/llm-analyzer.yaml:/app/config.yaml:ro
+      - ../models:/app/models:ro
+      - ../services/llm-analyzer/src:/app/src:rw
+      - ../services/llm-analyzer/prompts:/app/prompts:ro
+    restart: unless-stopped
+    networks:
+      - edgevib-net
+    mem_limit: 2g
+    depends_on:
+      - mosquitto
+      - timescaledb
+
 volumes:
   mosquitto_data:
   mosquitto_log:

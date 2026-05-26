@@ -399,10 +399,161 @@ services/inference-engine/
 |------|------|------|------|
 | 实时推理 | ESP32-S3 | CNN-LSTM (TFLite, <200KB) | 振动故障4分类 |
 | 批量推理 | Orange Pi | ONNX 趋势预测 + RUL | 多设备聚合健康评估 |
-| 语义分析 | Orange Pi | llama.cpp (GGUF) | 故障报告自然语言生成 |
+| 语义分析 | Orange Pi | llama.cpp (GGUF) + llama-cpp-python | 故障报告自然语言生成 |
 | 视觉检测 | Orange Pi | OpenCV | 可见光异常检测 |
 
 ONNX 模型用 Git LFS 管理 (<50MB), GGUF 大模型放 PC 端存储, 部署时拉取。
+
+## llm-analyzer — 本地 LLM 故障报告生成
+
+### 决策 1: LLM 运行时引擎 (2026-05-26)
+
+**选择**: llama.cpp + llama-cpp-python
+
+**Why**: 与 inference-engine 的 ONNX Runtime 分离，不抢 ONNX session；GGUF 量化模型生态最大；llama-cpp-python 可在 asyncio `run_in_executor` 中调用，架构与 inference-engine 一致；Orange Pi 4GB 内存跑 1-2B 参数 Q4_K_M 量化模型可行。
+
+**Alternatives considered**:
+- Ollama: 多了 daemon 层，增加内存开销 (~200MB)，部署复杂度高于纯 Python 方案
+- ONNX + SLM (Phi-3-mini): 模型生态不如 GGUF 丰富，中文支持弱
+
+### 决策 2: 模型选型 (2026-05-26)
+
+**选择**: Qwen2.5-1.5B-Instruct (Q4_K_M 量化 GGUF)
+
+**Why**: 原生中文最优（阿里通义千问家族），面向中国工厂操作人员；Q4_K_M 量化后 ~1.0GB，Python 进程 + llama.cpp 上下文 ~500MB，合计 ~1.5GB；推理速度 5-8 token/s，200 字故障报告约 30 秒，工业非实时场景可接受。
+
+**Alternatives considered**:
+- Gemma-3-1B: 中文较弱，不适合中文故障报告
+- DeepSeek-R1-Distill-Qwen-1.5B: 推理链开销大，token 消耗翻倍，延迟高
+
+### 内存预算 (4GB LPDDR4x)
+
+| 组件 | 预估占用 |
+|------|---------|
+| Ubuntu 22.04 + 系统服务 | ~400MB |
+| Docker daemon | ~200MB |
+| Mosquitto + TimescaleDB + Grafana | ~600MB |
+| data-aggregator (Go) | ~50MB |
+| rs232-gateway (C) | ~10MB |
+| inference-engine (Python + ONNX) | ~300MB |
+| **已占用小计** | **~1.5GB** |
+| Qwen2.5-1.5B (Q4_K_M) 模型文件 | ~1.0GB |
+| llm-analyzer Python + llama.cpp 上下文 | ~500MB |
+| **llm-analyzer 合计** | **~1.5GB** |
+| vision-service (预留) | ~200MB |
+| audio-monitor (预留) | ~100MB |
+| api-server (Go, 预留) | ~50MB |
+| OPC UA Server (open62541 C, 预留) | ~30MB |
+| **未来扩展预留小计** | **~380MB** |
+| **总计** | **~3.4GB / 4GB** |
+| **剩余 headroom** | **~600MB** |
+
+headroom 600MB 用于应对 TimescaleDB 内存增长（高频查询缓存）、Docker 日志缓冲、以及操作系统页缓存。
+
+### 决策 3: 输入数据源 & 触发机制 (2026-05-26)
+
+**选择**: MQTT 事件触发 + TimescaleDB 直读 混合
+
+**Why**:
+- **MQTT 实时触发**: 订阅 `EdgeVib/+/inference/+/ai/report`，inference-engine 发布 WARNING/CRITICAL 时立即触发报告生成。事件驱动零延迟
+- **TimescaleDB 上下文补充**: 收到触发后查询 `ai_reports` 完整行 + 近 10 分钟 `vibration_view` 数据做 LLM 上下文。避免 MQTT payload 过大，保持消息轻量
+- **定时汇总**: 支持按 cron 表达式（如每班次 8h/12h）生成设备健康日报，与事件触发并存
+
+**Alternatives considered**:
+- 纯 MQTT: payload 中放完整上下文太重（>10KB），超出 MQTT 合理范围
+- 纯 DB 轮询: 丢失事件驱动的即时性，且轮询间隔内可能堆积多条告警
+- inference-engine import 调用: 强耦合，任一服务 OOM 都会影响对方
+
+### 决策 4: 输出目标 (2026-05-26)
+
+**选择**: TimescaleDB `llm_reports` 表持久化 + MQTT 实时推送
+
+**Why**:
+- TimescaleDB 持久化: Grafana 可新增 "AI 报告" 面板；审计可追溯；与 `ai_reports` 解耦，独立 schema
+- MQTT 发布到 `EdgeVib/{site_id}/llm/{device_id}/report`: 实时推送，下游服务（api-server、通知系统）直接消费
+- 与 inference-engine 输出模式一致（DB + MQTT 双通道）
+
+### 决策 5: Prompt 模板设计 (2026-05-26)
+
+**选择**: YAML 模板 + 2 场景 + 1-shot 示例
+
+**Why**:
+- **模板格式**: YAML 文件，每模板含 `system_prompt` + `user_template`（`{placeholder}` 变量）。与项目 `config/*.yaml` 惯例一致，非开发人员也能改
+- **模板数量**: 2 个 — `alert_report`（事件触发，强调即时告警解读和处置建议）+ `daily_summary`（定时汇总，强调趋势分析和健康评分变化）
+- **1-shot 示例**: 每个模板嵌 1 个示例报告。1.5B 小模型对 structured-data→text 任务，1-shot 能大幅提高输出结构一致性（标题/摘要/分析/建议 四段式），成本仅 +150 tokens
+- **输出结构**: 统一四段式 — 标题/当前状态摘要/异常分析/维护建议，后期解析和 Grafana 展示友好
+
+**Context window 策略**: Qwen2.5-1.5B 支持 32K token，本场景输入控制在 800-1200 token（数据上下文）+ 200 token（system prompt + 示例），输出 200-500 token，远低于上限
+
+### 决策 6: 服务集成方式 (2026-05-26)
+
+**选择**: Docker + volume mount (模型文件 bind mount 进容器)
+
+**Why**: 与 inference-engine 部署一致，docker-compose 统一编排；Python 依赖隔离（llama-cpp-python 需编译 C++ 扩展）；模型放 `/opt/edge-gateway/models/` 不污染镜像；可用 Docker `--memory` 限制内存防 OOM。
+
+### 决策 7: 模型加载策略 (2026-05-26)
+
+**选择**: 始终加载 (always-loaded)
+
+**Why**: 内存预算已预留 1GB；故障报告是核心价值，10-30s 懒加载延迟影响用户体验；llama.cpp 空闲时 CPU 用量为零（纯内存驻留）；工业可靠性 > 省内存。
+
+### 决策 8: 告警去重 & 频率控制 (2026-05-26)
+
+**选择**: 去重窗口 + 升级穿透
+
+**Why**:
+- 同 (device_id, severity) 在 **5 分钟窗口内**只生成一篇报告，避免同一故障每 10s 重复触发
+- severity **升级 (WARNING→CRITICAL)** 或**降级 (CRITICAL→WARNING)** 穿透去重，立即生成新报告——状态变化值得报告
+- 去重状态用内存 dict 维护，进程重启清空（可接受，最多重复一篇）
+- 与 inference-engine 的 MQTT 事件驱动衔接，抑制噪音
+
+### llm-analyzer 架构概览
+
+```
+inference-engine (10s cycle)
+    │
+    ├── WARNING/CRITICAL → MQTT EdgeVib/+/inference/+/ai/report
+    │                              ↓
+    │                       llm-analyzer MQTT subscriber (trigger)
+    │                              ↓
+    │                       去重检查 (内存dict, 5min窗口, 升级穿透)
+    │                              ↓
+    │                       DB: 查询 ai_reports + vibration_view (上下文)
+    │                              ↓
+    │                       report_builder: 组装数据 → prompt
+    │                              ↓
+    │                       llama.cpp: Qwen2.5-1.5B 推理 (~30s)
+    │                              ↓
+    │                       DB: INSERT INTO llm_reports
+    │                       MQTT: publish EdgeVib/{site}/llm/{device}/report
+    │
+    ├── 定时日报 (cron 8h/12h)
+    │       ↓
+    │   DB: 查询过去窗口内 ai_reports → prompt → LLM → llm_reports + MQTT
+    │
+    └── Health: 30s MQTT status/health (与 inference-engine 一致)
+```
+
+### 待实现清单
+
+| 文件 | 用途 |
+|------|------|
+| `src/__main__.py` | asyncio 入口 + 主循环 |
+| `src/config.py` | YAML 配置 dataclass |
+| `src/db/client.py` | TimescaleDB: 读 ai_reports + vibration_view, 写 llm_reports |
+| `src/llm/engine.py` | llama-cpp-python 封装: load/unload/generate |
+| `src/llm/templates.py` | YAML prompt 模板加载 + 变量填充 |
+| `src/mqtt/subscriber.py` | MQTT 触发订阅 + 去重逻辑 |
+| `src/mqtt/publisher.py` | MQTT 报告发布 |
+| `src/report_builder.py` | 数据上下文组装 → prompt → LLM 调用 → 报告解析 |
+| `src/health.py` | 健康遥测 (推理计数、错误计数、延迟统计) |
+| `prompts/alert_report.yaml` | 事件告警模板 |
+| `prompts/daily_summary.yaml` | 定时日报模板 |
+| `docker/timescaledb/init.sql` | 追加 `llm_reports` 建表 DDL |
+| `docker/docker-compose.yml` | 追加 llm-analyzer 服务定义 |
+| `Dockerfile` | Python 3.11 + llama-cpp-python + psycopg2 + paho-mqtt |
+| `requirements.txt` | llama-cpp-python, psycopg2-binary, paho-mqtt, pyyaml, structlog |
+| `tests/` | 单元测试: prompt 模板填充、去重逻辑、report_builder 数据组装 |
 
 ## OPC UA 集成 (可选增强)
 
