@@ -49,3 +49,31 @@ SELECT create_hypertable('ai_reports', 'time', if_not_exists => TRUE);
 
 CREATE INDEX IF NOT EXISTS idx_ai_reports_severity
     ON ai_reports (severity, time DESC);
+
+-- LLM-generated fault reports table
+CREATE TABLE IF NOT EXISTS llm_reports (
+    time                TIMESTAMPTZ NOT NULL,
+    site_id             TEXT NOT NULL,
+    device_id           TEXT,
+    report_type         TEXT NOT NULL,              -- 'alert_report' | 'daily_summary'
+    severity            TEXT,                       -- 'NORMAL' | 'WARNING' | 'CRITICAL'
+    title               TEXT,
+    summary             TEXT,
+    analysis            TEXT,
+    advice              TEXT,
+    raw_output          TEXT,                       -- Full LLM output for audit/debug
+    model_name          TEXT,
+    model_version       TEXT,
+    tokens_used         INT,
+    generation_time_ms  DOUBLE PRECISION,
+    trigger_reason      TEXT,                       -- 'ai_bearing_fault' | 'rms_high' | 'scheduled'
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+SELECT create_hypertable('llm_reports', 'time', if_not_exists => TRUE);
+
+CREATE INDEX IF NOT EXISTS idx_llm_reports_type
+    ON llm_reports (report_type, time DESC);
+
+CREATE INDEX IF NOT EXISTS idx_llm_reports_device
+    ON llm_reports (site_id, device_id, time DESC);
