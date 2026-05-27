@@ -1,0 +1,34 @@
+# vision-service — USB Camera Periodic Capture Configuration
+# Matches edge-gateway/CONTEXT.md Vision Service Decisions 1-8
+
+devices:
+  - site_id: "factory1"
+    device_type: "motor"
+    device_id: "motor01"
+    camera_index: 0
+    label: "1号电机(驱动端)"
+
+capture:
+  baseline_interval_s: 60
+  baseline_resolution: "640x480"
+  baseline_quality: 75
+  baseline_retention_days: 7
+  event_resolution: "1920x1080"
+  event_quality: 90
+  event_retention_days: 30
+  storage_path: "/opt/edge-gateway/data/vision"
+
+mqtt:
+  broker: "localhost"
+  port: 1883
+  client_id: "edgevib-vision-service"
+  qos: 1
+  subscribe_topic: "EdgeVib/+/inference/+/ai/report"
+  publish_topic: "EdgeVib/{site_id}/vision/{device_id}/capture"
+
+timescaledb:
+  host: "localhost"
+  port: 5432
+  dbname: "edgevib_ts"
+  user: "edgevib"
+  password: "edgevib123"
