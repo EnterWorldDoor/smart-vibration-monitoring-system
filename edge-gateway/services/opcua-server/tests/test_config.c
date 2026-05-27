@@ -48,9 +48,9 @@ static void test_load_valid(void)
     /* Overridden values */
     TEST_ASSERT_EQUAL_STRING("opc.tcp://0.0.0.0:4841", cfg.server.endpoint);
     TEST_ASSERT_EQUAL_STRING("test_site",                cfg.server.site_id);
-    TEST_ASSERT_EQUAL_STRING("192.168.1.100",            cfg.db.host);
-    TEST_ASSERT_EQUAL(5433, cfg.db.port);
-    TEST_ASSERT_EQUAL_STRING("test_db", cfg.db.dbname);
+    TEST_ASSERT_EQUAL_STRING("localhost",            cfg.db.host);
+    TEST_ASSERT_EQUAL(5432, cfg.db.port);
+    TEST_ASSERT_EQUAL_STRING("edgevib_ts", cfg.db.dbname);
     TEST_ASSERT_EQUAL(0, cfg.security.anonymous);
 
     /* Default values remain */

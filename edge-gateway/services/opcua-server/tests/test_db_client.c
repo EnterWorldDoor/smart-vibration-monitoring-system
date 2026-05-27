@@ -15,20 +15,6 @@
 #include <string.h>
 
 /* ------------------------------------------------------------------ */
-/* Synthetic row helpers — test the row struct access patterns         */
-/* ------------------------------------------------------------------ */
-
-static int g_cb_call_count;
-static struct db_row g_last_row;
-
-static void capture_cb(const struct db_row *row, void *user_data)
-{
-    (void)user_data;
-    g_cb_call_count++;
-    memcpy(&g_last_row, row, sizeof(g_last_row));
-}
-
-/* ------------------------------------------------------------------ */
 /* Tests                                                               */
 /* ------------------------------------------------------------------ */
 

@@ -9,8 +9,8 @@
 
 CC       := gcc
 CFLAGS   := -std=c11 -Wall -Wextra -Werror -O2 -g -D_DEFAULT_SOURCE \
-            -I/usr/include/postgresql
-LDFLAGS  := -lopen62541 -lpq -lyaml -lpthread -lm
+            -I/usr/include/postgresql -I/usr/local/include
+LDFLAGS  := -L/usr/local/lib -lopen62541 -lpq -lyaml -lpthread -lm
 
 TARGET   := build/opcua-server
 
@@ -77,7 +77,7 @@ $(BUILDDIR)/test_db_client: $(TESTDIR)/test_db_client.c $(BUILDDIR)/db_client.o 
 	@mkdir -p $(@D)
 	$(CC) $(CFLAGS) -I$(SRCDIR) -o $@ $^ -lpq -lyaml
 
-$(BUILDDIR)/test_opcua_server: $(TESTDIR)/test_opcua_server.c $(BUILDDIR)/opcua_server.o $(BUILDDIR)/node_mapping.o
+$(BUILDDIR)/test_opcua_server: $(TESTDIR)/test_opcua_server.c $(BUILDDIR)/opcua_server.o $(BUILDDIR)/node_mapping.o $(BUILDDIR)/db_client.o $(BUILDDIR)/config.o
 	@mkdir -p $(@D)
 	$(CC) $(CFLAGS) -I$(SRCDIR) -o $@ $^ $(LDFLAGS)
 
