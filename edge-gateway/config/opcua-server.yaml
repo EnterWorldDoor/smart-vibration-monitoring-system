@@ -1,0 +1,19 @@
+server:
+  endpoint: "opc.tcp://0.0.0.0:4840"
+  app_name: "EdgeVib OPC UA Server"
+  app_uri:  "urn:edgevib:opcua-server"
+  site_id:  "factory1"
+
+timescaledb:
+  host:     "127.0.0.1"
+  port:     5432
+  dbname:   "edgevib_ts"
+  user:     "edgevib"
+  password: "edgevib123"
+  poll_interval_ms: 1000
+
+security:
+  anonymous: true
+
+logging:
+  level: "info"

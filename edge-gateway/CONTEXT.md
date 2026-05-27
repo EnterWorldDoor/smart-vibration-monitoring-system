@@ -1330,3 +1330,148 @@ services/rs232-gateway/
 - 错误恢复: USB-RS232 拔出/松动后如何自动恢复
 - systemd unit 设计: 重启策略、日志轮转、依赖关系
 - Orange Pi 端项目结构: 独立 Makefile + 源文件组织
+
+## OPC UA Server — 工业标准 SCADA 互操作
+
+### 决策 1: 实现语言与库 (2026-05-26)
+
+**选择**: open62541 (C)
+
+**Why**: Orange Pi 4 Pro 内存 4GB，已用 ~3.4GB，headroom 仅 600MB。open62541 编译后 ~500KB，运行时内存 <10MB（含地址空间节点），是所有选项中最低的。open62541 由 Fraunhofer IOSB 主导维护，全 OPC UA 特性支持（DA/HA/AE/订阅/Method），工业验证最充分。C 代码可复用 rs232-gateway 已验证的 Makefile + systemd 部署模式。
+
+**Alternatives considered**:
+- Go + gopcua: 开发效率更高且 pgx DB 访问已验证，但 Go 运行时 + 依赖 ~15-20MB，是 C 方案的 2-4 倍
+- Python + opcua-asyncio: ~50-80MB，在 600MB headroom 约束下不可接受；py-opcua 社区活跃度下降
+
+### 决策 2: 数据获取策略 (2026-05-26)
+
+**选择**: 纯 TimescaleDB 定时轮询 (1s 间隔)
+
+**Why**: OPC UA 客户端（SCADA/组态软件）自身以 1-5 秒周期轮询 Server，1s 轮询完全匹配 SCADA 的典型刷新率。单数据源（TimescaleDB）避免 MQTT 通道引入的数据一致性问题。主循环模型简单：`while(1) { poll_db(); update_nodes(); sleep(1s); }`，与 rs232-gateway 架构一致。OPC UA 协议层面的 Monitored Items 订阅机制（SamplingInterval + 变化检测）在 Server 内存中完成，不依赖外部 MQTT broker。
+
+**Alternatives considered**:
+- MQTT 订阅实时数据: <100ms 延迟优势被 SCADA 1-5s 轮询频率抹平；引入 libmosquitto 依赖增加 ~5MB 内存
+- DB + MQTT 混合: 双通道复杂度高，当前 2-10 设备规模不需要事件驱动优化。未来设备数增长到 50+ 时可再加 MQTT 通道，当前简单方案足够
+
+### 决策 3: 地址空间模型 (2026-05-26)
+
+**选择**: 分层树状结构，与 MQTT topic / REST URL 路径对齐
+
+```
+Root/Objects/EdgeVib/{site_id}/{device_type}/{device_id}/
+  ├── Vibration/     (FolderType)
+  │   ├── RMS_X         (AnalogItemType, Double, mm/s)
+  │   ├── RMS_Y         (AnalogItemType, Double, mm/s)
+  │   ├── RMS_Z         (AnalogItemType, Double, mm/s)
+  │   ├── Overall_RMS   (AnalogItemType, Double, mm/s)
+  │   └── PeakFrequency (AnalogItemType, Double, Hz)
+  ├── AI_Diagnosis/  (FolderType)
+  │   ├── ClassName     (String)
+  │   ├── Confidence    (Double, 0-1)
+  │   └── Source        (String, "primary_cnn"|"fallback_rule")
+  ├── MotorData/     (FolderType, 仅 motor type)
+  │   ├── Voltage       (AnalogItemType, Double, V)
+  │   ├── Current       (AnalogItemType, Double, A)
+  │   └── Power         (AnalogItemType, Double, W)
+  └── Status/        (FolderType)
+      ├── Online        (Boolean)
+      └── HealthScore   (Double, 0-100)
+```
+
+**Why**: 三层对齐（MQTT topic / REST URL / OPC UA NodeId）使任何熟悉其中一个接口的人能自动理解另外两个。AnalogItemType 带 EURange + EngineeringUnits（mm/s, °C, Hz），SCADA 组态软件可自动绑定仪表盘/趋势图组件。只暴露操作员关心的聚合指标，24 维原始特征向量留给 ML 模型。AccessLevel 设为 CurrentRead 只读，设备控制走 ESP32→F407 链路。地址空间在启动时从 `device_status_view` 动态构建，不硬编码设备列表。
+
+### 决策 4: 数据库访问与节点值映射 (2026-05-26)
+
+**选择**: libpq 直连 + 单持久连接 + 批量查询 + 静态数组映射表
+
+**Why**:
+- **libpq**: PostgreSQL 官方 C 库，rs232-gateway 的依赖链中已存在（libmosquitto 动态链接 libpq），无需新增依赖。内存 ~1MB
+- **单连接**: 单线程 1s 轮询，无并发需求。连接池在 C 中的复杂度不值得收益
+- **批量查询**: `SELECT * FROM device_status_view` 一次返回所有设备最新值，VIEW 已解构成平表列（`rms_x`, `health_score`, ...），libpq 的 `PQgetvalue()` 直接读列值，零 JSON 解析
+- **映射表**: 启动时为每个 OPC UA 变量节点建立 `NodeId → (device_key, column_name)` 映射，存储在静态数组 `struct node_mapping[MAX_VARIABLES]` 中。1s 轮询时遍历 SQL 结果行 → 查映射表 → `UA_Server_writeValue()` 更新。无 malloc/free
+
+**DB 查询延迟**: `device_status_view` 是窗口函数取最新一条，2-10 设备场景下 <5ms。1s 轮询间隔对 TimescaleDB 几乎无负载。
+
+### 决策 5: 部署模式 (2026-05-26)
+
+**选择**: systemd 直接部署（非 Docker）
+
+**Why**: 用户为省 10-15MB 选了 C over Go，Docker 的 20MB 容器开销同理。open62541 自带 TCP Server，`systemctl start opcua-server` 即可。SCADA 客户端局域网直连 `192.168.1.1:4840`，无需 Docker 端口映射。与 rs232-gateway（C + Makefile + systemd）部署模式一致。OPC UA 协议自带加密（SecurityPolicy），不依赖 Docker TLS。
+
+**Alternatives considered**:
+- Docker: 与 api-server/inference-engine 统一编排，但 +20MB 容器开销在 600MB headroom 约束下不合理
+
+### 决策 6: 安全策略 (2026-05-26)
+
+**选择**: Anonymous + SecurityPolicy=None (MVP)，预留 Username/Password 配置开关
+
+**Why**: 与现有安全模型一致（Mosquitto 匿名、api-server 无认证）。192.168.1.0/24 扁平 LAN 是信任域，攻击者如已接入物理网络可直接连 Mosquitto/TimescaleDB/Grafana，OPC UA 单点加认证不改变威胁面。open62541 `UA_ServerConfig_setMinimal()` 一行配置。配置文件 `security.anonymous: true/false` 预留开关，将来切 UserPass 只需加 AccessControl 回调，diff <20 行。端口转发暴露到公网时再启用 Username/Password + Sign。
+
+### 决策 7: 错误处理与容错 (2026-05-26)
+
+**选择**: rs232-gateway 模式 + OPC UA 节点质量标记
+
+**Why**:
+- **进程永不因可恢复错误退出**: DB 断连→每 2s 重试（`PQreset()`），节点标记 `UA_STATUSCODE_BADWAITINGFORINITIALDATA`，重连成功→恢复 `GOOD`。查询失败→标记 `UNCERTAINLASTUSABLEVALUE`，保留上次有效值。这些都不退出
+- **systemd 只处理致命崩溃**: `Restart=always, RestartSec=5s`，SIGSEGV/OOM 时自动拉起
+- **OPC UA 协议优势**: 每个变量节点有 Status 字段，SCADA 读到 Bad 自动显示"通信故障"。比 MQTT/REST 的"无响应即挂了"更优雅
+- **无数据不报错**: device_status_view 返回空行表明没有在线设备，是正常状态
+
+### 决策 8: 项目结构与构建 (2026-05-26)
+
+**选择**: 8 源文件 + Makefile + systemd，对标 rs232-gateway 模式
+
+```
+services/opcua-server/
+├── Makefile
+├── src/
+│   ├── main.c / main.h                     — 入口 + 信号 + 1s 主循环
+│   ├── opcua_server.c / opcua_server.h     — open62541 初始化 + 地址空间构建 + 节点更新
+│   ├── db_client.c / db_client.h           — libpq 连接 + 查询 + 结果解析
+│   ├── node_mapping.c / node_mapping.h     — NodeId ↔ DB column 映射表
+│   └── config.c / config.h                 — libyaml 配置加载
+├── systemd/
+│   └── opcua-server.service
+└── tests/
+    ├── test_opcua_server.c
+    └── test_db_client.c
+```
+
+**Why**: 与 rs232-gateway 结构平行（6→8 源文件，多了 DB 和地址空间模块，少了 MQTT 和 JSON 转换）。依赖 `libopen62541-dev` + `libpq-dev` + `libyaml-dev`，后二者已在 Orange Pi 上存在。`make -j4` 编译到单二进制，systemd 部署。
+
+### 决策 9: 配置文件 (2026-05-26)
+
+**选择**: 4-section YAML (`server` / `timescaledb` / `security` / `logging`)
+
+```yaml
+server:
+  endpoint: "opc.tcp://0.0.0.0:4840"
+  app_name: "EdgeVib OPC UA Server"
+  app_uri:  "urn:edgevib:opcua-server"
+  site_id:  "factory1"
+
+timescaledb:
+  host: "localhost", port: 5432
+  dbname: "edgevib_ts", user: "edgevib", password: "edgevib123"
+  poll_interval_ms: 1000
+
+security:
+  anonymous: true
+
+logging:
+  level: "info"
+```
+
+**Why**: 与 api-server 5-section YAML 惯例对齐。`endpoint: 0.0.0.0:4840` 绑定所有接口（eth0 + wlan0 AP），SCADA 从有线和 WiFi 侧都能连。`poll_interval_ms` 可配，现场调试无需重新编译。不设 product_uri/manufacturer_name（非商用发布）。
+
+### 决策 10: 测试策略 (2026-05-26)
+
+**选择**: 双层测试 — C 单元测试 + Python 集成测试
+
+**Why**: 对标 rs232-gateway 测试水准（~1200 行）。C 单元测试覆盖 node_mapping / config / db_client / opcua_server 四个模块，`make test` 一键运行。Python 集成测试用 `opcua-asyncio` 客户端连接真实 Server，验证地址空间结构 + 节点值与 TimescaleDB 数据一致性 + Bad 状态行为。测试数据复用 `tests/integration/insert_test_data.sql`（3 设备 × 多时间点）。
+
+### 决策 11: 功能范围 (2026-05-26)
+
+**选择**: DA-only（纯数据访问），排除 HA/A&C/Methods
+
+**Why**: 历史数据查询 → TimescaleDB + Grafana + api-server REST 已覆盖。告警状态机 → inference-engine + Grafana Alerting + F407 声光报警已覆盖。设备控制 → ESP32→F407 链路，OPC UA 加写入口会引入安全隐患。All nodes AccessLevel = CurrentRead。在 Server app_description 中明确声明 DA-only，避免 SCADA 集成方期望错误。
