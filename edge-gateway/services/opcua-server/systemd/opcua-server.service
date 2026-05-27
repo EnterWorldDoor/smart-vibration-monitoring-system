@@ -1,0 +1,33 @@
+[Unit]
+Description=EdgeVib OPC UA Server — Industrial SCADA Data Access
+Documentation=https://github.com/EnterWorldDoor/smart-vibration-monitoring-system
+After=network.target postgresql.service
+Wants=postgresql.service
+
+[Service]
+Type=simple
+User=orangepi
+Group=orangepi
+WorkingDirectory=/opt/edge-gateway
+ExecStart=/opt/edge-gateway/services/opcua-server/build/opcua-server /opt/edge-gateway/config/opcua-server.yaml
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=opcua-server
+
+# Security hardening
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadOnlyPaths=/opt/edge-gateway/config
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictRealtime=yes
+MemoryMax=50M
+
+# Resource limits
+LimitNOFILE=1024
+
+[Install]
+WantedBy=multi-user.target
