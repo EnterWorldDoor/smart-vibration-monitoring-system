@@ -412,6 +412,110 @@ ONNX 模型用 Git LFS 管理 (<50MB), GGUF 大模型放 PC 端存储, 部署时
 - **节点示例**: `Motor01.XAxis.RMS`, `Motor01.Current.Amps`, `Motor01.Temperature.Celsius`
 - **价值**: 任何 SCADA/组态软件可直接连接，工业互操作
 
+### vision-service Phase 2 备选方案: MIPI CSI 摄像头 Linux 驱动 (2026-05-27)
+
+**当前状态**: vision-service 使用 USB UVC 摄像头，走内核现成的 UVC 驱动。
+
+**备选方案**: 为 Orange Pi 4 Pro 的 MIPI CSI 接口编写 V4L2 子设备驱动，使树莓派兼容的 CSI 摄像头（OV5647/IMX219）可用。
+
+**覆盖的 Linux 驱动知识点**:
+
+| 知识点 | 对应工作 |
+|--------|---------|
+| 设备树 (Device Tree) | 编写 `.dts` overlay，描述 CSI 控制器 + sensor 的 I2C 地址、时钟、lane 配置 |
+| V4L2 子设备驱动 | 实现 `v4l2_subdev_ops`（`g_fmt/s_fmt`、`g_ctrl/s_ctrl`），sensor 寄存器通过 I2C 读写 |
+| 字符设备 | V4L2 框架将 `/dev/video0` 暴露为标准字符设备，用户空间 `open/read/ioctl/mmap` |
+| Media Controller | 全志 A733 CSI → ISP → DMA pipeline 拓扑配置 |
+| DMA/内存映射 | V4L2 `mmap` 零拷贝，DMA buffer 直接从 CSI 到用户空间，实现 CONTEXT.md 所述的"V4L2 DMA 零拷贝采集" |
+
+**业务价值**: CSI 摄像头 CPU 占用更低、帧率更高、走专用总线。vision-service 代码**零改动**——V4L2 接口对上层透明，`/dev/video0` 节点不变。
+
+**硬件需求**: 树莓派兼容的 CSI 摄像头模块（OV5647/IMX219），淘宝 15-30 元，FPC 排线。当前 USB 摄像头方案作为默认方案不受影响。
+
+**触发条件**: 用户获取 MIPI CSI 摄像头硬件后启动。代码作为 vision-service 的 `drivers/` 子目录或独立内核模块仓库维护。
+
+## Linux 内核驱动开发路线图 (2026-05-27)
+
+EdgeVib 当前架构中 Orange Pi 4 Pro 所有 I/O 均走内核现成驱动（USB UVC、USB-Serial、TCP/IP）。以下为紧贴业务的 Linux 内核驱动开发入口，全部**零额外硬件成本**（除 CSI 摄像头）。
+
+| # | 驱动模块 | 子系统 | 知识点 | 硬件 | 工作量 |
+|---|---------|--------|--------|------|--------|
+| 1 | Virtual CAN | 网络设备 | net_device_ops + SocketCAN + sk_buff + NAPI | 零 | 2-3天 |
+| 2 | RAM Buffer Block Device | 块设备 | gendisk + blk-mq + kmap | 零 | 2-3天 |
+| 3 | IIO Vibration Device | IIO + 字符 | iio_dev + sysfs + trigger + buffer | 零 | 2-3天 |
+| 4 | Software RTC Driver | RTC + 平台 | rtc_device + platform_driver + of_match | 零 | 1-2天 |
+| 5 | HWMON Motor Health | hwmon + sysfs | hwmon_device + thermal_zone | 零 | 1-2天 |
+| 6 | E-Stop Input Device | input | input_dev + evdev | 零 | 1天 |
+| 7 | MIPI CSI V4L2 Driver | V4L2 + DT + DMA | v4l2_subdev + media_controller + DT overlay | CSI摄像头 | 5-7天 |
+
+### 1. 网络设备 — Virtual CAN (SocketCAN)
+
+**业务关联**: NDE CAN 特征帧（F103→F407→ESP32→MQTT）到达 Orange Pi 后无法被 Linux CAN 工具链消费。
+
+**设计**: 注册 `vcan_edgevib` 网络接口。用户空间 daemon 从 MQTT 读 CAN 帧后 `write(fd, can_frame)` 注入内核。`candump`/`cansend`/Wireshark 直接可用。
+
+**知识点**: `alloc_candev()` / `register_candev()` / `struct net_device_ops`（`.ndo_open/stop/start_xmit`）/ `alloc_can_skb()` / `can_rx_offload_*`（NAPI）/ `struct sk_buff`
+
+**调用路径**: `用户态 daemon write() → sys_write → vcan_write → alloc_can_skb → netif_rx → CAN协议栈 → AF_CAN socket → candump`
+
+### 2. 块设备 — 工业数据环形缓冲 RAM Disk
+
+**业务关联**: data-aggregator 每 2s 大量小写入 TimescaleDB，磨损 eMMC。
+
+**设计**: 注册 `/dev/edgevib-buffer` 块设备，内存环形缓冲。TimescaleDB WAL 挂载在此设备上，定期 flush 到 eMMC。mkfs + mount 直接使用。
+
+**知识点**: `struct gendisk` / `struct block_device_operations` / `blk_mq_tag_set` + `blk_mq_ops.queue_rq` / `blk_mq_start_request()` / `blk_mq_end_request()` / `kmap()`/`kunmap()` / `radix_tree` 页缓存
+
+**调用路径**: `TimescaleDB write() → VFS → blk_mq_submit_bio → queue_rq → memcpy到环形缓冲 → blk_mq_end_request`
+
+### 3. IIO — 振动特征指标虚拟设备
+
+**业务关联**: 振动数据在 TimescaleDB 中，无法通过标准 Linux 传感器接口读取。
+
+**设计**: 注册 IIO 虚拟设备，sysfs 暴露振动指标：`/sys/bus/iio/devices/iio:device0/in_rms_x_raw` 等。daemon 从 DB 读最新值后 `iio_device_write_raw()` 更新。`iio_info`/`iio_readdev`/Grafana IIO plugin 直接可用。
+
+**知识点**: `struct iio_dev` / `iio_device_register()` / `struct iio_chan_spec`（`IIO_ACCEL`等通道类型）/ `iio_trigger` / `iio_buffer` / IIO sysfs 接口
+
+### 4. RTC 驱动 — 软件时钟持久化
+
+**业务关联**: Orange Pi 无电池 RTC，断电时钟归零→TimescaleDB 分区键乱序。Chrony NTP 解决运行中同步，启动时刻的 1970→2026 跳变需 RTC 桥接。
+
+**设计**: 注册 `rtc-edgevib` 平台设备。开机从 `/var/lib/edgevib/last_time` 读上次关机时间设初始时钟，关机时 `rtc_set_time()` 写回。NTP 修正前至少有近似正确时间。
+
+**知识点**: `struct rtc_device` / `struct rtc_class_ops`（`.read_time/set_time`）/ `devm_rtc_device_register()` / `struct platform_driver` / `struct of_device_id` / `module_platform_driver()`
+
+### 5. HWMON — 电机健康状态监控
+
+**业务关联**: `sensors` 命令是 Linux 运维标配。Grafana hwmon 插件和 `lm-sensors` 直接可用。
+
+**设计**: 注册 hwmon 设备，sysfs 暴露 `temp1_input`（电机温度）/ `curr1_input`（电机电流）/ `in1_input`（电压）/ `fan1_input`（振动RMS）。daemon 从 DB 取数更新。
+
+**知识点**: `struct hwmon_device` / `struct hwmon_chip_info` / `hwmon_device_register_with_info()` / `HWMON_CHANNEL_INFO()` / `struct thermal_zone_device`
+
+### 6. Input 设备 — 急停按钮事件
+
+**业务关联**: F407 急停状态通过 MQTT (CMD 0x07) 到达，当前只能通过 Grafana/MQTT 感知。暴露为 input 设备后 `evtest` 直接监控。
+
+**设计**: 注册虚拟 input 设备。daemon 从 MQTT 收到急停事件后 `input_report_key(dev, KEY_STOP, 1); input_sync(dev);`。`/dev/input/eventX` 供任何 Linux 工具读取。
+
+**知识点**: `struct input_dev` / `input_register_device()` / `input_report_key()` / `input_sync()` / `set_bit(EV_KEY, ...)`
+
+### 7. MIPI CSI V4L2 驱动 (已在上方详述)
+
+### 优先级排序（学习价值 × 业务价值）
+
+```
+1. Virtual CAN     — 网络设备 + 业务直接关联
+2. IIO Vibration   — 工业 I/O 标准 + 零硬件
+3. RAM Block Dev   — 块设备 blk-mq + eMMC 保护
+4. Software RTC    — 平台设备模型 + 解决实际时钟问题
+5. HWMON Motor     — sysfs + sensors 集成
+6. E-Stop Input    — input 子系统入门
+7. MIPI CSI V4L2   — 最全面 (需额外硬件)
+```
+
+**实施策略**: 前 6 个模块独立为 `.ko` 内核模块，存放在 `edge-gateway/drivers/` 目录。内核模块通过 sysfs/netlink/input 等标准接口与用户空间交互，伴随 daemon 从 MQTT/TimescaleDB 获取业务数据后注入驱动。不修改现有服务代码。
+
 ## 现场总线扩展
 
 - **RS485/Modbus RTU**: F407 USART3 复用为 RS485 方向控制, Orange Pi 通过 USB-RS485 接入。OPC UA Server 做 Modbus ↔ OPC UA 协议网关
