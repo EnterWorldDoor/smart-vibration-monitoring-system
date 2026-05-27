@@ -555,6 +555,406 @@ inference-engine (10s cycle)
 | `requirements.txt` | llama-cpp-python, psycopg2-binary, paho-mqtt, pyyaml, structlog |
 | `tests/` | 单元测试: prompt 模板填充、去重逻辑、report_builder 数据组装 |
 
+## vision-service — USB 摄像头视觉监测
+
+### 决策 1: 硬件接口 (2026-05-27)
+
+**选择**: USB UVC 摄像头 + OpenCV VideoCapture
+
+**Why**: 用户手头已有 USB 2.0 摄像头，即插即用。Linux UVC 驱动成熟，OpenCV `cv2.VideoCapture(0)` 打开即用，零驱动适配。Orange Pi 4 Pro 虽有两个 MIPI CSI 接口，但全志 A733 的 CSI 驱动在 Ubuntu 22.04 上可用性未知，且用户无 MIPI 摄像头硬件。
+
+**Alternatives considered**:
+- MIPI CSI: 低 CPU 开销、高帧率、专用带宽，但需要驱动适配且用户无对应硬件
+
+### 决策 2: 部署模式 (2026-05-27)
+
+**选择**: systemd 直接部署（非 Docker）
+
+**Why**: 与 rs232-gateway、opcua-server 相同的 IO 密集型轻量服务模式。vision-service 仅依赖 `opencv-python-headless + numpy`，在 Python venv 中 `pip install` 即可，无需 Docker 隔离复杂依赖链。Docker 的 20MB 容器开销 + 400MB 镜像在 Orange Pi 4GB 内存约束下不合理。
+
+**全量内存预算（更新，含 api-server + llm-analyzer）**:
+
+| 组件 | 运行时内存 | 部署方式 |
+|------|-----------|---------|
+| Ubuntu 22.04 系统 | ~600 MB | 裸机 |
+| llm-analyzer (Qwen2.5-1.5B Q4_K_M) | ~1300 MB | Docker |
+| TimescaleDB | ~400 MB | Docker |
+| Grafana | ~180 MB | Docker |
+| inference-engine (Python + ONNX) | ~180 MB | Docker |
+| api-server (Go) | ~20 MB | Docker |
+| data-aggregator (Go) | ~20 MB | Docker |
+| Mosquitto | ~15 MB | Docker |
+| rs232-gateway (C) | ~5 MB | systemd |
+| opcua-server (C) | ~10 MB | systemd |
+| Docker daemon 自身 | ~50 MB | — |
+| **vision-service (Python + OpenCV)** | **~120 MB** | **systemd** |
+| **已用合计** | **~2900 MB** | |
+| **剩余 headroom** | **~1100 MB** | |
+
+llm-analyzer 的 1.5B GGUF 模型（q4_k_m 量化，权重 ~0.84GB + KV Cache ~0.35GB + Python 运行时 ~0.1GB）是最大单一内存消费者（~1.3GB）。系统部署遵循简单分界线：**Docker = 复杂依赖隔离**（llama.cpp C++ 编译链、ONNX Runtime、PostgreSQL），**systemd = 简单 IO 服务**（串口读→MQTT 写、DB 读→OPC UA 暴露、摄像头→存图）。
+
+**Alternatives considered**:
+- Docker: 与 inference-engine/llm-analyzer 统一编排，但 +20MB 容器开销 + ~400MB Python-OpenCV 镜像，在 4GB 内存约束下不合理。USB `/dev/video0` 设备透传也需要额外 `--device` 配置
+
+### 决策 3: 采集策略 — 混合模式 (2026-05-27)
+
+**选择**: 低频基线拍照 + MQTT 事件触发拍照，Phase 1 不做运动检测
+
+**Why**:
+- **工业场景 ≠ 安防监控**：电机一直在转动，传统帧差分"运动检测"永远触发，无效。工业场景需要的是"画面异常检测"（histogram drift / SSIM），需要累积基线数据后才能做
+- **Phase 1 (MVP) 只做采集**: 先把图像数据采回来积攒基线，Phase 2 再加画面异常分析管线。拆分降低 MVP 复杂度，不改动 Phase 1 架构即可平滑升级
+- **双模式互补**: 低频缩略图做长期视觉回溯（"上周电机什么样子"），事件触发全分辨率做故障瞬间证据保全。存储可控，关键瞬间不丢画质
+- **与振动域解耦**: inference-engine 负责振动异常检测，vision-service 负责视觉证据采集。通过 MQTT 事件驱动协作，视觉不参与异常判断（Phase 1）
+
+**Phase 1 采集参数**:
+
+| 参数 | 定时基线 | 事件触发 |
+|------|---------|---------|
+| 间隔 | 60s | inference-engine WARNING/CRITICAL |
+| 分辨率 | 640×480 | 1920×1080 (全分辨率) |
+| 保留期 | 7 天 (自动轮转) | 30 天 |
+| 用途 | 长期视觉趋势回溯 | 故障瞬间高清证据 + 辅助 llm-analyzer 报告 |
+
+**Phase 2 扩展（本迭代不做）**:
+- 基线缩略图 → OpenCV 直方图对比 / SSIM 结构相似度 → 画面显著偏离→视觉告警
+- 新增 `frame_analyzer.py` 消费基线图片流，不改动 Phase 1 采集管线
+
+**Alternatives considered**:
+- 纯定时拍照: 事件驱动零延迟优势丢失，告警发生后要等最长 60s 才拍
+- 纯事件触发: 无基线数据，事后无法回溯故障前画面，Phase 2 画面异常检测无数据可用
+- Phase 1 就做运动检测: 电机转动场景下帧差分无效，需先累积至少 1 周基线才能做异常检测
+
+### 决策 4: 存储策略 — 文件系统主记录 + DB 元数据索引 + MQTT 通知 (2026-05-27)
+
+**选择**: 三级存储 — 文件系统为主记录、TimescaleDB 为查询索引、MQTT 为实时通知
+
+**文件系统结构**:
+```
+/opt/edge-gateway/data/vision/{site_id}/{device_id}/{YYYY-MM-DD}/{type}_{HHMMSS}.jpg
+
+示例:
+  data/vision/factory1/motor01/2026-05-27/baseline_143005.jpg
+  data/vision/factory1/motor01/2026-05-27/event_143522_WARNING.jpg
+```
+
+按 site/device/date 三级目录，文件名自编码 type 和 timestamp。按日期分目录的优势：自动轮转只需 `rm -rf` 过期日期目录，一条命令。
+
+**TimescaleDB 元数据表** (`vision_captures`):
+```sql
+CREATE TABLE vision_captures (
+    time           TIMESTAMPTZ NOT NULL,
+    site_id        TEXT NOT NULL,
+    device_id      TEXT NOT NULL,
+    capture_type   TEXT NOT NULL,   -- 'baseline' | 'event'
+    trigger_src    TEXT,            -- 'timer' | 'mqtt_inference'
+    resolution     TEXT,            -- '640x480' | '1920x1080'
+    file_path      TEXT NOT NULL,
+    file_size_bytes BIGINT
+);
+```
+
+**Why**: 文件是主记录——DB 不可用时照样存图，只写 WARN 日志。DB 行是便利索引：Grafana 面板可列出最近截图、api-server REST 可查询过滤、Phase 2 画面分析可直接按时间范围批量查基线。
+
+**MQTT 通知**: 每次拍照后发布轻量消息到 `EdgeVib/{site_id}/vision/{device_id}/capture`，内容仅含文件路径 + 元数据（不含图像数据）。api-server WebSocket hub 推送实时截图通知。
+
+**自动轮转策略**:
+- 定时基线 (640×480): 保留 7 天，每天清理过期日期目录
+- 事件触发 (1920×1080): 保留 30 天
+- 容量估算: 基线 ~50KB/张 × 1440张/天 ≈ 72MB/天 → 7天 ≈ 500MB；事件按每天 5 次 ≈ 1MB/天
+
+### 决策 5: 数据管线集成 (2026-05-27)
+
+待定
+
+### 决策 5: 数据管线集成 — 车间级架构 (2026-05-27)
+
+**选择**: vision-service 定位为车间级服务，支持多设备多摄像头配置，MQTT 事件驱动 + 定时双采集模式
+
+**Why — Orange Pi 是车间网关不是单设备附属**:
+
+系统已在代码层面确立了车间级架构：
+- 单一 Mosquitto Broker 做车间消息总线，所有 ESP32 直连
+- 单一 TimescaleDB 实例，通过 `site_id`/`device_id` 列区分设备
+- Grafana 设备概览页展示全部设备
+- inference-engine: 设备级推理 → 电机级聚合 → 车间级排序（决策 5）
+- WiFi AP: Orange Pi 开热点 `EdgeVib-AP`，所有 ESP32 直连
+
+F407+ESP32 是一对一绑定电机（数据采集），Orange Pi 4 Pro 是车间级边缘网关（数据汇聚 + AI + 可视化 + OPC UA）。vision-service 应继承这一模式——一台 Orange Pi 可接多台 USB 摄像头，每台对准一台电机。
+
+**MQTT 集成（输入）**:
+- 订阅 `EdgeVib/+/inference/+/ai/report` (QoS 1)
+- 从 topic 解析 `site_id` 和 `device_id`，匹配配置文件中 `devices` 列表
+- 事件 body 包含 WARNING/CRITICAL severity → 触发对应设备摄像头全分辨率拍照
+
+**MQTT 集成（输出）**:
+- 发布到 `EdgeVib/{site_id}/vision/{device_id}/capture` — 轻量通知（文件路径 + 元数据，不含图像）
+- 后续 api-server WebSocket hub 或 Grafana 可消费此 topic 做实时截图展示
+
+**TimescaleDB 集成**:
+- 写入 `vision_captures` 元数据表（best effort，DB 不可用时文件系统主记录不受影响）
+- 查询可选：读取 `device_status_view` 确认设备在线状态（Phase 2 优化）
+
+**摄像头-设备映射配置**:
+
+```yaml
+# config/vision-service.yaml — 车间级多设备设计
+devices:
+  - site_id: "factory1"
+    device_type: "motor"
+    device_id: "motor01"
+    camera_index: 0          # /dev/video0 对准 motor01
+    label: "1号电机(驱动端)"
+
+  # 未来扩展
+  # - site_id: "factory1"
+  #   device_type: "motor"
+  #   device_id: "motor02"
+  #   camera_index: 1        # /dev/video1 对准 motor02
+  #   label: "2号电机(驱动端)"
+
+capture:
+  baseline_interval_s: 60
+  baseline_resolution: "640x480"
+  baseline_quality: 75
+  baseline_retention_days: 7
+  event_resolution: "1920x1080"
+  event_quality: 90
+  event_retention_days: 30
+  storage_path: "/opt/edge-gateway/data/vision"
+
+mqtt:
+  broker: "localhost"
+  port: 1883
+  client_id: "edgevib-vision-service"
+  subscribe_topic: "EdgeVib/+/inference/+/ai/report"
+  publish_topic: "EdgeVib/{site_id}/vision/{device_id}/capture"
+
+timescaledb:
+  host: "localhost"
+  port: 5432
+  dbname: "edgevib_ts"
+  user: "edgevib"
+  password: "edgevib123"
+```
+
+**数据流**:
+
+```
+定时器 (60s)
+    │
+    └── for each device in config.devices:
+          ├── cv2.VideoCapture(camera_index).read()
+          ├── resize 640×480 → JPEG encode (quality 75)
+          ├── fs: write /vision/{site_id}/{device_id}/{date}/baseline_{time}.jpg
+          ├── DB: INSERT INTO vision_captures (best effort)
+          └── MQTT: publish capture notification (best effort)
+
+MQTT 事件 (inference-engine WARNING/CRITICAL)
+    │
+    ├── 解析 topic → site_id/device_id → 匹配 config.devices[device_id]
+    ├── cv2.VideoCapture(camera_index).read()
+    ├── 1920×1080 → JPEG encode (quality 90)
+    ├── fs: write .../{device_id}/{date}/event_{time}_{severity}.jpg
+    ├── DB: INSERT INTO vision_captures
+    └── MQTT: publish capture notification
+```
+
+**错误处理**: 对标 rs232-gateway 的"永不因可恢复错误退出"原则：
+- 摄像头采集失败（ENODEV）→ WARN 日志 + 跳过本轮 + 继续循环
+- DB 写入失败 → WARN 日志 + 文件已存，数据不丢失
+- MQTT 发布失败 → WARN 日志 + 不影响主循环
+- 进程级致命错误 → systemd `Restart=always, RestartSec=5s` 自动拉起
+
+### 决策 6: 项目结构与构建 (2026-05-27)
+
+**选择**: 8 源文件 + Makefile + systemd，对标 inferenc-engine (Python) 和 rs232-gateway (systemd) 的混合模式
+
+**源码树**:
+
+```
+services/vision-service/
+├── Makefile                          — venv 创建 + pip install + 一键安装 systemd unit
+├── requirements.txt                  — opencv-python-headless, numpy, psycopg2-binary, paho-mqtt, pyyaml
+├── src/
+│   ├── __init__.py
+│   ├── __main__.py                   — 入口: 配置加载 → 初始化 → 主循环 (定时+事件双模式)
+│   ├── config.py                     — YAML 配置 dataclass (对标 llm-analyzer src/config.py)
+│   ├── camera/
+│   │   ├── __init__.py
+│   │   └── capture.py                — cv2.VideoCapture 封装 (open/read/release/reconnect)
+│   ├── storage/
+│   │   ├── __init__.py
+│   │   └── file_store.py             — 目录创建 + JPEG 写入 + 自动轮转清理
+│   ├── db/
+│   │   ├── __init__.py
+│   │   └── client.py                 — psycopg2 vision_captures 元数据写入 (best effort)
+│   ├── mqtt/
+│   │   ├── __init__.py
+│   │   ├── subscriber.py             — MQTT 触发订阅 + topic 解析 + 设备匹配
+│   │   └── publisher.py              — MQTT capture 通知发布
+│   └── health.py                     — 健康上报 (30s MQTT, 对标 inference-engine)
+
+config/
+└── vision-service.yaml               — 车间级多设备配置 (与 inference.yaml 同目录)
+
+systemd/
+└── vision-service.service
+```
+
+**Why 8 源文件**: 对标 inference-engine (10 源文件) 和 rs232-gateway (6 源文件) 之间。每个模块职责单一：camera 只管硬件、storage 只管文件、db 只管元数据写入、mqtt 管订阅和发布。未来 Phase 2 加 `frame_analyzer.py` 不改动现有模块。
+
+**构建与安装**:
+
+```bash
+make install  # python3 -m venv venv → pip install -r requirements.txt → sudo cp systemd/*.service
+make test     # pytest tests/
+```
+
+**systemd unit** (对标 rs232-gateway):
+
+```ini
+[Unit]
+Description=EdgeVib Vision Service — USB Camera Capture
+After=network.target mosquitto.service
+
+[Service]
+Type=simple
+User=orangepi
+Group=video                          # /dev/video0 访问权限
+ExecStart=/opt/edge-gateway/services/vision-service/venv/bin/python \
+          -m src --config /opt/edge-gateway/config/vision-service.yaml
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+```
+
+`Group=video` 给 `/dev/video0` 访问权限，不需要 root。日志走 journald，`journalctl -u vision-service -f` 查看。Makefile 提供 `install`/`test` 统一入口，与 rs232-gateway/opcua-server 保持一致操作习惯。
+
+### 决策 7: 测试策略 — 分层测试 (2026-05-27)
+
+**选择**: 单元测试 (纯逻辑) + Mock 测试 (外部依赖隔离) + 集成测试 (端到端，mock 摄像头)
+
+**单元测试** (纯逻辑，无硬件依赖，pytest):
+
+| 模块 | 测试内容 | 方式 |
+|------|---------|------|
+| `config.py` | YAML 解析、dataclass 校验、多设备配置加载 | 纯函数 |
+| `file_store.py` | 路径生成 `"{site}/{device}/{date}/{type}_{time}.jpg"`、轮转清理逻辑（过期日期目录删除） | 纯函数 + tempdir |
+| `mqtt/subscriber.py` | topic 解析 `EdgeVib/+/inference/+/ai/report` → site_id/device_id 提取、设备列表匹配 | 纯函数 |
+
+**Mock 测试** (外部依赖 mock，无需真实硬件/DB):
+
+| 模块 | Mock 对象 | 测试内容 |
+|------|-----------|---------|
+| `camera/capture.py` | mock `cv2.VideoCapture` | open 失败重连、read 返回 None→跳过、release 后 resource 清理 |
+| `db/client.py` | mock `psycopg2.connect` | INSERT 生成正确性、DB 不可用→best effort→WARN 日志不抛异常 |
+| `mqtt/publisher.py` | mock `paho.mqtt.client` | publish 消息格式验证、断连自动重连 |
+
+**集成测试** (端到端，mock 摄像头):
+
+| 测试 | 覆盖 |
+|------|------|
+| `test_end_to_end.py` | 完整管线: 配置加载 → mock 摄像头返回固定帧 → 存文件到 tempdir → 验证文件路径/命名/JPEG 编码 → 验证 DB 元数据写入 |
+
+**Why**: 对标 inference-engine 测试分层（conftest.py fixtures + 模块级测试 + 集成测试）。纯逻辑模块优先单测覆盖——config/file_store/subscriber 是无外部依赖的纯函数。cv2 和 paho 通过 mock 隔离，不需要真实硬件即可在 PC 端跑全部测试。集成测试用 mock 摄像头 + tempdir，一键 `pytest tests/`。
+
+**测试数据**: 复用 `tests/integration/insert_test_data.sql`（已有 3 设备 × 多时间点），vision-service 测试不需额外插入数据。
+
+**关键路径覆盖**: topic 解析（MQTT 输入）、路径生成（文件检索）、轮转清理（磁盘爆满防护）三个关键路径必须有测试。
+
+### 决策 8: 主循环编程模型 — 同步主循环 + Queue 桥接 (2026-05-27)
+
+**选择**: 同步 `while+sleep` 主循环 + `queue.Queue` 桥接 MQTT 事件，不使用 asyncio
+
+**主循环架构**:
+
+```python
+event_queue = queue.Queue(maxsize=32)  # 线程安全队列
+
+# paho on_message 回调（在 paho 后台线程执行）
+def on_trigger(client, userdata, msg):
+    event = parse_trigger(msg.topic, msg.payload)
+    try:
+        event_queue.put_nowait(event)
+    except queue.Full:
+        pass  # 队列满丢弃，不影响采集主循环
+
+# 主循环（主线程，唯一操作摄像头的线程）
+def main_loop():
+    last_baseline = time.time()
+    while running:
+        # 1. 消费 MQTT 事件（非阻塞）
+        while not event_queue.empty():
+            handle_event_capture(event_queue.get_nowait())
+
+        # 2. 定时基线拍照
+        if time.time() - last_baseline >= cfg.capture.baseline_interval_s:
+            for dev in cfg.devices:
+                capture_baseline(dev)
+            last_baseline = time.time()
+
+        # 3. 自动轮转清理（每小时一次）
+        if need_rotation():
+            rotate_expired_files()
+
+        time.sleep(1)
+```
+
+**Why 同步循环**:
+- 只有两个并发点（60s 定时器 + 低频 MQTT 事件），asyncio 的 `gather(task1, task2)` 过度抽象
+- paho-mqtt Python 客户端是线程模型（`loop_start()` daemon thread），不是 asyncio-native。用 asyncio 反而要多写 `loop.call_soon_threadsafe` 桥接代码
+- 同步循环更易调试——完整调用栈，无协程状态，`Ctrl+C` 直接中断
+- 省 asyncio event loop 约 5MB 内存
+- 对标 rs232-gateway 和 opcua-server 的 `while(1) { poll(); sleep(1s); }` 模式——C 服务怎么做，Python 服务也怎么做
+
+**Why Queue 桥接而非回调线程直接拍照**:
+cv2.VideoCapture 不是线程安全的。paho `on_message` 在子线程触发，主循环的定时拍照也在用同一个 VideoCapture 对象——两个线程争一个摄像头必出 race condition。`queue.Queue` 将事件串行到主线程处理，保证摄像头操作全程单线程。
+
+**Alternatives considered**:
+- asyncio 模型: 与 inference-engine/llm-analyzer 一致但 paho-mqtt 线程桥接增加复杂度，且 asyncio 的全双工 I/O 优势在此场景用不上
+- 回调线程直接拍照: cv2 线程不安全，race condition 风险
+
+---
+
+## vision-service 设计决策汇总
+
+| # | 决策项 | 选择 |
+|---|--------|------|
+| 1 | 硬件接口 | USB UVC 摄像头 + OpenCV VideoCapture |
+| 2 | 部署模式 | systemd (`Group=video`) |
+| 3 | 采集策略 | 混合: 60s 定时基线 (640×480) + MQTT 事件触发全分辨率 (1920×1080) |
+| 4 | 存储策略 | 文件系统主记录 + TimescaleDB `vision_captures` 元数据索引 + MQTT 通知 |
+| 5 | 数据管线集成 | 车间级多设备设计，MQTT 事件驱动 + 定时双采集 |
+| 6 | 项目结构 | 8 源文件 + Makefile + systemd unit |
+| 7 | 测试策略 | 三层: 单元测试 (纯逻辑) + Mock 测试 + 集成测试 (mock 摄像头) |
+| 8 | 主循环模型 | 同步 `while+sleep` + `queue.Queue` 桥接 MQTT 事件 |
+| — | Phase 2 预留 | 画面异常检测 (OpenCV 直方图/SSIM)，新增 `frame_analyzer.py` 不影响 Phase 1 架构 |
+
+### 关键文件清单
+
+| 文件 | 用途 |
+|------|------|
+| `services/vision-service/src/__main__.py` | 入口 + 主循环 |
+| `services/vision-service/src/config.py` | YAML 配置 dataclass |
+| `services/vision-service/src/camera/capture.py` | cv2.VideoCapture 封装 (open/read/release/reconnect) |
+| `services/vision-service/src/storage/file_store.py` | 文件系统写入 + 自动轮转清理 |
+| `services/vision-service/src/db/client.py` | TimescaleDB `vision_captures` 元数据写入 (best effort) |
+| `services/vision-service/src/mqtt/subscriber.py` | MQTT 触发订阅 + topic 解析 + 设备匹配 |
+| `services/vision-service/src/mqtt/publisher.py` | MQTT capture 通知发布 |
+| `services/vision-service/src/health.py` | 健康上报 (30s MQTT) |
+| `services/vision-service/systemd/vision-service.service` | systemd unit |
+| `services/vision-service/Makefile` | venv + pip install + 一键安装 |
+| `services/vision-service/requirements.txt` | opencv-python-headless, numpy, psycopg2-binary, paho-mqtt, pyyaml |
+| `config/vision-service.yaml` | 车间级多设备配置 |
+| `docker/timescaledb/init.sql` | 追加 `vision_captures` 建表 DDL |
+| `tests/test_config.py`, `test_file_store.py`, `test_subscriber.py`, `test_capture.py`, `test_db_client.py`, `test_end_to_end.py` | 三层测试覆盖 |
+
+---
+
 ## API Server 设计
 
 ### 决策 1: 语言与框架 (2026-05-26)
