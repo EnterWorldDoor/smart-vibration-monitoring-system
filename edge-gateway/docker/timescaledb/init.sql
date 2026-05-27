@@ -77,3 +77,22 @@ CREATE INDEX IF NOT EXISTS idx_llm_reports_type
 
 CREATE INDEX IF NOT EXISTS idx_llm_reports_device
     ON llm_reports (site_id, device_id, time DESC);
+
+-- Vision capture metadata table (vision-service)
+CREATE TABLE IF NOT EXISTS vision_captures (
+    time              TIMESTAMPTZ NOT NULL,
+    site_id           TEXT NOT NULL,
+    device_id         TEXT NOT NULL,
+    capture_type      TEXT NOT NULL,        -- 'baseline' | 'event'
+    trigger_src       TEXT,                 -- 'timer' | 'mqtt_inference'
+    resolution        TEXT,                 -- '640x480' | '1920x1080'
+    file_path         TEXT NOT NULL,
+    file_size_bytes   BIGINT
+);
+
+SELECT create_hypertable('vision_captures', 'time', if_not_exists => TRUE);
+
+CREATE INDEX IF NOT EXISTS idx_vision_site_device_time
+    ON vision_captures (site_id, device_id, time DESC);
+
+SELECT add_retention_policy('vision_captures', INTERVAL '60 days', if_not_exists => TRUE);
