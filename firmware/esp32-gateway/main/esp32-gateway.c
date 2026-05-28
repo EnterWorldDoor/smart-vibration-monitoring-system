@@ -73,6 +73,7 @@
 #include "ai_service.h"            /* AI推理服务 (TinyML + 级联) */
 #include "data_manager.h"          /* 数据管理器 (系统数据总线) */
 #include "mqtt.h"                  /* MQTT 通信模块 (mqtt_app组件) */
+#include "ota_update.h"            /* OTA 固件升级 (HTTP下载+SHA256) */
 
 /* 引入硬件引脚配置 (集中管理所有GPIO定义) */
 #include "hardware_config.h"
@@ -165,6 +166,8 @@
 #define TASK_PRIORITY_SENSOR      6                /**< 传感器处理任务优先级 (中等) */
 #define TASK_PRIORITY_MQTT        5                /**< MQTT 上传任务优先级 (较低) */
 #define TASK_PRIORITY_MONITOR     2                /**< 系统监控任务优先级 (最低) */
+#define TASK_PRIORITY_OTA_CHECK   1                /**< OTA 版本检查优先级 (最低) */
+#define TASK_STACK_OTA_CHECK      4096             /**< OTA 检查任务栈大小 */
 
 /**
  * 任务栈大小 (字节)
@@ -268,6 +271,7 @@ static void task_uart_rx(void *arg);
 static void task_sensor_process(void *arg);
 static void task_mqtt_upload(void *arg);
 static void task_system_monitor(void *arg);
+static void task_ota_check(void *arg);
 
 /* 回调函数 */
 static void on_temp_data_received(const struct temp_humidity_data *data,
@@ -1823,6 +1827,68 @@ static void task_system_monitor(void *arg)
     vTaskDelete(NULL);
 }
 
+/**
+ * task_ota_check - OTA 版本检查任务 (优先级1, 最低)
+ *
+ * 每 N 秒轮询 OTA Server 的 version.json。
+ * 发现新版本后自动 HTTP 下载并升级 ESP32 自身。
+ * 也检查 F407 固件版本，如有更新可通过 ota_relay 模块中继升级。
+ *
+ * 栈大小: 4096 字节
+ * 初始延迟: 30 秒 (等待 WiFi/MQTT/协议栈稳定)
+ * 检查间隔: 3600 秒 (可配置)
+ */
+static void task_ota_check(void *arg)
+{
+    (void)arg;
+
+    LOG_INFO("TASK-OTA", "OTA check task started (priority=%d)",
+             TASK_PRIORITY_OTA_CHECK);
+
+    /* 等待系统稳定 */
+    vTaskDelay(pdMS_TO_TICKS(30000));
+
+    while (g_ctx.system_running) {
+        const struct system_config *cfg = config_manager_get();
+        uint32_t interval_s = 3600;
+
+        if (cfg && cfg->ota_auto_check_enabled) {
+            if (cfg->ota_check_interval_s > 0)
+                interval_s = cfg->ota_check_interval_s;
+
+            /* 检查 ESP32 自身固件版本 */
+            struct ota_firmware_info info;
+            int ret = ota_update_check_version(NULL, "1.0.0", &info);
+
+            if (ret == APP_ERR_OK) {
+                LOG_INFO("TASK-OTA",
+                         "New ESP32 firmware: %s (size=%lu)",
+                         info.version,
+                         (unsigned long)info.size);
+
+                /* 异步启动 OTA 升级 */
+                ret = ota_update_start_async(NULL, NULL, NULL, NULL);
+                if (ret == APP_ERR_OK) {
+                    LOG_INFO("TASK-OTA", "ESP32 OTA upgrade started");
+                } else {
+                    LOG_WARN("TASK-OTA", "Failed to start OTA upgrade (err=%d)",
+                             ret);
+                }
+            } else if (ret == APP_ERR_NOT_SUPPORTED) {
+                /* 已是最新版本, 正常 */
+            } else {
+                LOG_WARN("TASK-OTA", "Version check failed (err=%d)", ret);
+            }
+        }
+
+        LOG_INFO("TASK-OTA", "Next check in %lu seconds", (unsigned long)interval_s);
+        vTaskDelay(pdMS_TO_TICKS(interval_s * 1000));
+    }
+
+    LOG_INFO("TASK-OTA", "OTA check task stopped");
+    vTaskDelete(NULL);
+}
+
 /* ==================== 主入口函数 ==================== */
 
 /**
@@ -1950,6 +2016,17 @@ void app_main(void)
         /* 打印当前 device_id (用于 Topic 构建) */
         uint8_t dev_id = config_manager_get_device_id();
         LOG_INFO("MAIN", "Device ID: %u (used in MQTT topics)", dev_id);
+    }
+
+    /* ========== 第3.5步: 初始化 OTA 固件升级服务 ========== */
+    ret = ota_update_init();
+    if (ret != APP_ERR_OK) {
+        LOG_WARN("MAIN", "OTA update init failed (err=%d), OTA unavailable", ret);
+    } else {
+        LOG_INFO("MAIN", "OTA update service initialized OK");
+
+        /* 标记当前固件为有效 (防止自动回滚) */
+        ota_update_mark_current_valid();
     }
 
     /* ========== 第4步: 初始化时间同步 (SNTP) ==========
@@ -2119,6 +2196,19 @@ void app_main(void)
     if (task_ret != pdPASS) {
         LOG_WARN("MAIN", "Failed to create monitor task — continuing without it");
         g_ctx.task_monitor = NULL;
+    }
+
+    /* 任务5: OTA 版本检查 (优先级1, 最低) — 非致命 */
+    task_ret = xTaskCreate(
+        task_ota_check,
+        "ota_check",
+        TASK_STACK_OTA_CHECK,
+        NULL,
+        TASK_PRIORITY_OTA_CHECK,
+        NULL
+    );
+    if (task_ret != pdPASS) {
+        LOG_WARN("MAIN", "Failed to create OTA check task — continuing without it");
     }
 
     /* ========== 启动完成, 打印摘要 ========== */

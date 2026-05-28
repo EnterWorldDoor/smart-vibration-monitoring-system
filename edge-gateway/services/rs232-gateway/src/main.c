@@ -46,6 +46,60 @@ struct app_config {
 
 static volatile sig_atomic_t g_running = 1;
 
+/* ==================== 主/备切换状态机 ==================== */
+
+/*
+ * F407 UART4 (主通道, 经 ESP32 WiFi 中转) vs UART5/RS232 (备通道, 直连)
+ * 切换策略: UART4 任一 CRC 合法帧 = 存活; 3s 无帧切 UART5; 5s 恢复切回
+ * 滞回 5s > 3s 防乒乓切换
+ */
+
+#define BACKUP_SWITCH_TIMEOUT_MS   3000
+#define BACKUP_RECOVER_TIMEOUT_MS  5000
+
+static int  g_backup_active;
+static long g_last_uart4_alive_ms;
+
+static long current_time_ms(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
+static void update_uart4_heartbeat(void)
+{
+    g_last_uart4_alive_ms = current_time_ms();
+}
+
+static int is_uart4_alive(void)
+{
+    return (current_time_ms() - g_last_uart4_alive_ms) < BACKUP_SWITCH_TIMEOUT_MS;
+}
+
+/* ==================== OTA 下行处理 ==================== */
+
+#define OTA_DOWNLINK_TOPIC  "EdgeVib/+/ota/f407/downlink"
+#define OTA_UPLINK_TOPIC    "EdgeVib/factory1/ota/f407/uplink"
+
+static void on_ota_downlink(const char *topic, const void *payload,
+                            size_t len, void *user_data)
+{
+    int serial_fd = *(int *)user_data;
+
+    log_info("OTA downlink received (topic=%s, len=%zu)", topic, len);
+
+    /* 将下行数据转发到 F407 UART5 串口 */
+    if (serial_fd >= 0 && payload && len > 0) {
+        int written = serial_write(serial_fd, (const uint8_t *)payload, len);
+        if (written < 0) {
+            log_warn("OTA downlink serial_write failed");
+        } else {
+            log_info("OTA downlink forwarded %d bytes to F407 UART5", written);
+        }
+    }
+}
+
 /* ==================== 信号处理 ==================== */
 
 static void signal_handler(int sig)
@@ -60,6 +114,12 @@ static void on_frame_parsed(uint8_t cmd, uint8_t dev_id,
                             const uint8_t *data, uint16_t len,
                             void *user_data)
 {
+    /*
+     * 任一 CRC 合法帧到达即表示 UART4 (主通道 ESP32) 存活。
+     * 更新心跳时间戳供主/备切换状态机使用。
+     */
+    update_uart4_heartbeat();
+
     const char *prefix = (const char *)user_data;
     char json[PROTO_JSON_MAX_SIZE];
     char topic[PROTO_TOPIC_MAX_SIZE];
@@ -280,9 +340,20 @@ int main(int argc, char **argv)
         log_warn("mqtt_pub_init failed, will retry on publish");
     }
 
+    /* ---- 初始化主/备切换状态机 ---- */
+    g_backup_active = 0;
+    g_last_uart4_alive_ms = current_time_ms();
+
     /* ---- 主循环 ---- */
     int serial_fd = -1;
+    int serial_fd_backup = -1;  /* UART5 (RS232 备份通道) */
     uint8_t rx_buf[256];
+
+    /* ---- 订阅 OTA 下行命令 ---- */
+    {
+        mqtt_pub_subscribe(OTA_DOWNLINK_TOPIC, 1, on_ota_downlink, &serial_fd_backup);
+        log_info("subscribed to OTA downlink: %s", OTA_DOWNLINK_TOPIC);
+    }
 
     while (g_running) {
         /* 打开串口 (失败则重试) */
@@ -315,8 +386,47 @@ int main(int argc, char **argv)
         if (n == 0)
             continue;
 
-        /* 喂入解析器 */
+        /* 喂入解析器 (回调中自动更新 UART4 心跳) */
         proto_parse_feed_buf(rx_buf, (uint16_t)n);
+
+        /* ---- 主/备切换状态机 ---- */
+        {
+            int was_backup = g_backup_active;
+
+            if (is_uart4_alive()) {
+                /* UART4 主通道正常 */
+                if (g_backup_active) {
+                    long elapsed = current_time_ms() - g_last_uart4_alive_ms;
+                    if (elapsed < 0 || elapsed >= BACKUP_RECOVER_TIMEOUT_MS) {
+                        /* 实际上刚恢复, elapsed < timeout 表示 alive 刚成立 */
+                    }
+                    /* 连续 5s 以上 → 切回主通道 */
+                    if (elapsed >= BACKUP_RECOVER_TIMEOUT_MS) {
+                        g_backup_active = 0;
+                        log_info("master/backup: UART4 recovered, switching BACK to UART4 (primary)");
+                    }
+                }
+            } else {
+                /* UART4 主通道失联 */
+                if (!g_backup_active) {
+                    long elapsed = current_time_ms() - g_last_uart4_alive_ms;
+                    if (elapsed >= BACKUP_SWITCH_TIMEOUT_MS) {
+                        g_backup_active = 1;
+                        log_warn("master/backup: UART4 lost for %ldms, switching TO UART5 (backup)",
+                                 elapsed);
+                    }
+                }
+            }
+
+            /* 状态变化时上报 MQTT */
+            if (was_backup != g_backup_active) {
+                char msg[128];
+                snprintf(msg, sizeof(msg),
+                         "{\"backup_active\":%d,\"uart4_alive\":%d,\"timestamp_ms\":%ld}",
+                         g_backup_active, is_uart4_alive(), current_time_ms());
+                mqtt_pub_send("EdgeVib/factory1/gateway/rs232-gw/status", msg, strlen(msg));
+            }
+        }
     }
 
     /* ---- 优雅关闭 ---- */

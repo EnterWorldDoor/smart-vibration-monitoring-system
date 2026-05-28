@@ -45,6 +45,28 @@
 #define PROTO_CMD_MOTOR_CONTROL         0x15   /**< 电机控制命令 */
 #define PROTO_CMD_MOTOR_QUERY           0x16   /**< 电机状态查询 */
 
+/* ==================== OTA 固件升级命令 (ESP32↔F407) ==================== */
+
+#define PROTO_CMD_OTA_BEGIN             0x20   /**< OTA开始 (ESP32→F407): size(4B LE) + crc32(4B LE) */
+#define PROTO_CMD_OTA_DATA              0x21   /**< OTA数据块 (ESP32→F407): offset(4B LE) + data(N bytes) */
+#define PROTO_CMD_OTA_END               0x22   /**< OTA结束 (ESP32→F407): total_size(4B LE) + final_crc(4B LE) */
+#define PROTO_CMD_OTA_STATUS            0x23   /**< OTA状态上报 (F407→ESP32): state(1B) + progress(1B) + error(2B) */
+
+/* OTA 状态码 (CMD_OTA_STATUS payload[0]) */
+#define OTA_STAT_READY                  0x00
+#define OTA_STAT_RECEIVING              0x01
+#define OTA_STAT_WRITING                0x02
+#define OTA_STAT_SUCCESS                0x03
+#define OTA_STAT_ERROR                  0xFF
+
+/* OTA 错误码 (CMD_OTA_STATUS payload[2-3], LE) */
+#define OTA_ERR_FLASH_ERASE             0x01
+#define OTA_ERR_FLASH_WRITE             0x02
+#define OTA_ERR_FLASH_READ              0x03
+#define OTA_ERR_CRC_MISMATCH            0x04
+#define OTA_ERR_INTERNAL_ERASE          0x05
+#define OTA_ERR_INTERNAL_WRITE          0x06
+
 /* ==================== 系统命令字 ==================== */
 
 #define PROTO_CMD_ACK                   0xF0   /**< ACK 确认 */
