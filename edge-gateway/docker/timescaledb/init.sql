@@ -189,3 +189,23 @@ CREATE INDEX IF NOT EXISTS idx_upgrade_history_device
 
 CREATE INDEX IF NOT EXISTS idx_upgrade_history_site
     ON upgrade_history (site_id, started_at DESC);
+
+-- ============================================================
+-- Model Deploy Service: model_versions
+-- ============================================================
+CREATE TABLE IF NOT EXISTS model_versions (
+    id           BIGSERIAL PRIMARY KEY,
+    model_name   TEXT NOT NULL,
+    version      TEXT NOT NULL,
+    file_path    TEXT NOT NULL,
+    file_size    BIGINT NOT NULL,
+    sha256       TEXT NOT NULL,
+    metrics_json JSONB NOT NULL DEFAULT '{}',
+    deployed_at  TIMESTAMPTZ,
+    deployed_by  TEXT DEFAULT 'pc-push',
+    uploaded_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (model_name, version)
+);
+
+CREATE INDEX IF NOT EXISTS idx_model_versions_name
+    ON model_versions (model_name, uploaded_at DESC);
