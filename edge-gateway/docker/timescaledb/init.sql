@@ -143,3 +143,49 @@ CREATE INDEX IF NOT EXISTS idx_audio_anomalies_device
 
 CREATE INDEX IF NOT EXISTS idx_audio_anomalies_severity
     ON audio_anomalies (severity, time DESC);
+
+-- ============================================================================
+-- OTA Server: firmware version management
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS firmware_versions (
+    id               BIGSERIAL PRIMARY KEY,
+    platform         TEXT NOT NULL,              -- 'esp32' | 'f407'
+    version          TEXT NOT NULL,              -- '1.2.3' (semver)
+    build_date       TEXT NOT NULL,              -- '2026-05-28'
+    file_name        TEXT NOT NULL,              -- 'esp32-gateway-1.2.3.bin'
+    file_size        BIGINT NOT NULL,            -- bytes
+    sha256           TEXT NOT NULL,              -- hex string
+    min_hardware_rev TEXT NOT NULL DEFAULT 'v1.0',
+    release_notes    TEXT NOT NULL DEFAULT '',
+    file_path        TEXT NOT NULL,              -- relative path: 'esp32/esp32-gateway-1.2.3.bin'
+    uploaded_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (platform, version)
+);
+
+CREATE INDEX IF NOT EXISTS idx_firmware_versions_platform
+    ON firmware_versions (platform, uploaded_at DESC);
+
+-- ============================================================================
+-- OTA Server: device-level upgrade history
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS upgrade_history (
+    id               BIGSERIAL PRIMARY KEY,
+    platform         TEXT NOT NULL,
+    device_id        TEXT NOT NULL,
+    site_id          TEXT NOT NULL,
+    from_version     TEXT NOT NULL DEFAULT '',
+    to_version       TEXT NOT NULL DEFAULT '',
+    status           TEXT NOT NULL DEFAULT 'pending',
+        -- 'pending' | 'downloading' | 'installing' | 'success' | 'failed'
+    progress         INT NOT NULL DEFAULT 0,     -- 0-100
+    error_msg        TEXT,
+    started_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    completed_at     TIMESTAMPTZ,
+    duration_ms      BIGINT                      -- populated on success/fail
+);
+
+CREATE INDEX IF NOT EXISTS idx_upgrade_history_device
+    ON upgrade_history (platform, device_id, started_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_upgrade_history_site
+    ON upgrade_history (site_id, started_at DESC);

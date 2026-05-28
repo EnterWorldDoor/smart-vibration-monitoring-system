@@ -1796,3 +1796,344 @@ logging:
 **选择**: DA-only（纯数据访问），排除 HA/A&C/Methods
 
 **Why**: 历史数据查询 → TimescaleDB + Grafana + api-server REST 已覆盖。告警状态机 → inference-engine + Grafana Alerting + F407 声光报警已覆盖。设备控制 → ESP32→F407 链路，OPC UA 加写入口会引入安全隐患。All nodes AccessLevel = CurrentRead。在 Server app_description 中明确声明 DA-only，避免 SCADA 集成方期望错误。
+
+---
+
+## OTA Server — 跨平台固件分发系统
+
+### 系统范围
+
+OTA Server 负责三个平台的固件分发：ESP32-S3、STM32F407 (DE 振动节点)、STM32F103 (NDE 传感器节点)。三个平台的传输通道、固件格式、Flash 布局各不相同，需要统一版本管理和分发策略。
+
+### 平台 OTA 就绪状态 (2026-05-28 基线)
+
+| 平台 | OTA 客户端 | 传输通道 | Flash 现状 | 缺口 |
+|------|-----------|---------|-----------|------|
+| ESP32-S3 | 已完成(1200行C)，未集成 | WiFi/HTTP | 单 factory 分区 | 分区表需加 ota_0/ota_1，主程序集成 |
+| STM32 F407 | 零代码 | UART4(经ESP32), UART5(RS232), Ethernet(LAN8720) | 单区 1MB + 外挂 16MB SPI Flash | bootloader、Flash编程、协议OTA命令 |
+| STM32 F103 | 零代码 | CAN(经F407中继) | 单区 64KB (仅剩 ~26KB) | Flash空间极紧、CAN带宽有限 |
+| Orange Pi | OTA Server 零代码 | — | — | HTTP文件服务、版本管理、固件存储 |
+
+### 决策 1: ESP32 OTA 传输通道 (2026-05-28)
+
+**选择**: HTTP 直连 (Orange Pi 提供 HTTP 文件服务 + version.json 端点)
+
+**Why**: ESP32 现有 `ota_update` 模块已实现完整的 HTTP OTA 客户端——`ota_update_check_version()` 轮询 version.json、`perform_ota_download()` HTTP GET 下载固件、SHA256 校验、`esp_ota_set_boot_partition()` 切换启动分区。选 HTTP 直连意味着 ESP32 侧 OTA 代码零改动，只需：
+- 分区表加 `ota_0`/`ota_1` 分区
+- 主程序 `app_main()` 调用 `ota_update_init()` + 定时 `ota_update_check_version()`
+- 配置 `ota_server_url` 指向 Orange Pi AP 侧 HTTP 服务
+
+Orange Pi 侧提供轻量 HTTP 文件服务（Go 内嵌 `net/http` 或 nginx），暴露 `/firmware/esp32/version.json` 和 `/firmware/esp32/<version>.bin` 两个端点。ESP32 每小时轮询一次 version.json，发现新版本则自动下载升级。MQTT 仅用于升级状态上报（进度/成功/失败），不参与文件传输。
+
+**Alternatives considered**:
+- MQTT 通知 + HTTP 下载: 增加 MQTT→OTA 桥接代码但收益有限，OTA 对实时性无要求，每小时轮询足以覆盖
+- MQTT 传输固件: MQTT 单消息最大 ~256MB(Mosquitto 配置)，但 ESP32 端需将固件分片→MQTT payload→重组→写 Flash，协议复杂度远超 HTTP Range 请求，且占用 MQTT 通道带宽影响实时数据
+
+### 决策 2: STM32 F407 OTA 传输通道 (2026-05-28)
+
+**选择**: 主通道 ESP32 UART4 中继 + 备通道 UART5 RS232 直连，复用现有主/备切换策略
+
+**Why**: 与数据采集路径的主/备架构完全一致:
+```
+OTA 主通道 (ESP32正常): Orange Pi → HTTP/WiFi → ESP32 → UART4(115200bps) → F407
+OTA 备通道 (ESP32挂机): Orange Pi → USB-RS232 → UART5(115200bps) → F407
+```
+
+F407 端复用现有心跳监测: ESP32 UART4 任一台法帧=存活，丢失 >3s 切换 UART5，恢复后切回。固件更新是低频操作（几周一次），1MB 固件 115200bps 约 90 秒传输，期间 UART4 传感器数据暂停可接受——升级期间 ESP32 缓存或丢弃传感器数据。
+
+ESP32 中继角色: 从 Orange Pi HTTP 下载 F407 固件 → 通过 UART4 协议透传给 F407。ESP32 端 UART 协议栈（protocol.c 10 状态机 + CRC16-MODBUS）已验证稳定，新增 OTA 透传 CMD 仅需 2-3 个命令码。
+
+备通道复用 rs232-gateway：当前 rs232-gateway 仅做上行（serial read → MQTT publish），需新增下行能力（MQTT subscribe → serial write）以支持固件下发。这是纯软件改动，USB-RS232 硬件链路已存在。
+
+**Alternatives considered**:
+- 纯 RS232 直连: 需额外 USB-RS232 线缆，RS232 线缆长度受限（~15m），不适合 Orange Pi 远程部署场景
+- Ethernet/LAN8720 主通道: 速度最快（100Mbps）但 `MX_LWIP_Init` 当前因 PHY 无链路挂死，需先修复 lwIP 初始化逻辑才能使用。Phase 2 可启用为第三通道
+
+### 决策 3: STM32 F103 NDE 节点 OTA 排除 (2026-05-28)
+
+**选择**: F103 不支持 OTA，固件一次性烧录
+
+**Why**: F103 64KB Flash 中固件占用 ~37KB（58%），剩余 ~27KB。加入 bootloader（4-8KB CAN接收 + Flash擦写 + 跳转）后剩余仅 ~19KB，未来扩展空间极紧。F103 固件职责极其固定——ADXL345 驱动、定点 FFT（dsp_fft_q15）、CAN CRC8 组帧发送——这些工业传感器基础算法不会随业务需求变化。真正的业务逻辑变更（电机控制、AI模型执行、报警策略）发生在 F407 和 ESP32，这两者已有 OTA 通道。F103 绑在电机 NDE 端，物理 USB 烧录在工厂现场可接受，且 USB 口已预留用于供电+调试。
+
+**Alternatives considered**:
+- CAN OTA via F407 中继: 技术可行但 64KB Flash 余量太紧，收益不抵复杂度。CAN 500kbps 传输 OK，但 F103 加 bootloader 意味着 STM32CubeIDE 工程需双固件（bootloader + app），维护成本翻倍
+- F407 SWD 编程 F103: F407 可通过 GPIO 模拟 SWD 协议烧录 F103，但需额外 2 根 GPIO 线（SWCLK/SWDIO），当前硬件无预留。且 SWD 编程期间 F103 需保持复位状态，影响电机实时监测
+
+### 决策 4: OTA Server 部署模式 (2026-05-28)
+
+**选择**: Go Docker 独立服务，对标 api-server 模式
+
+**Why**: 与现有服务架构一致——单一 Go 二进制、multi-stage Docker 构建（`golang:1.22-alpine` → `alpine:3.19`）、`docker-compose` 编排。职责分两层：
+1. **HTTP 文件服务**: Go `net/http` 内嵌 `http.FileServer`，暴露 `/firmware/esp32/version.json` 和 `/firmware/esp32/<version>.bin`、`/firmware/f407/<version>.bin` 端点，供 ESP32 HTTP GET 下载
+2. **固件管理 REST API**: `POST /api/v1/firmware/upload` 上传、`GET /api/v1/firmware/versions` 版本列表、`GET /api/v1/firmware/upgrade-history` 升级历史
+
+固件二进制文件通过 volume mount 存储在 `/opt/edge-gateway/firmware/` 目录（不打包进 Docker 镜像）。版本元数据写入 TimescaleDB 新表 `firmware_versions`。MQTT 订阅 ESP32/F407 升级状态上报 topic `EdgeVib/+/ota/+/status`。
+
+**Alternatives considered**:
+- 集成到 api-server: 复用 pgxpool + MQTT + chi router，但 api-server 定位是"对外数据服务"，OTA 固件分发是不同职责。api-server 挂了不应影响 OTA，反之亦然
+- nginx + 独立 systemd 服务: 两段式部署增加运维复杂度，且 nginx 容器额外占用 ~10MB 内存
+
+### 决策 5: STM32 F407 Bootloader 设计 (2026-05-28)
+
+**选择**: Bootloader 32KB (Sector 0-1) + 外部 SPI Flash (W25Q128 16MB) 暂存固件镜像
+
+**Flash 布局**:
+```
+内部 Flash 1MB (0x08000000):
+  Sector 0-1 (32KB):  Bootloader (IAP)
+  Sector 2-11 (~992KB): App 固件
+
+外部 SPI Flash 16MB (SPI2, PI0=CS/PI1=SCK/PI3=MOSI/PI2=MISO):
+  固件暂存区 (完整 .bin 镜像)
+```
+
+**升级流程**:
+```
+1. App 运行中 ← ESP32 UART4 CMD_OTA_BEGIN(size, crc32)
+2. App: 备份 SRAM 写升级标志 → 关中断 → NVIC_SystemReset()
+3. Bootloader: 检测升级标志 → 初始化 UART4 (最小,无 RTOS) + SPI2
+4. Bootloader: UART4 逐块接收固件 → SPI Flash 写入
+5. 全部收完 → CRC32 校验
+6. 校验通过 → 擦除内部 Flash App 区 (Sector 2-11)
+7. SPI Flash 逐页拷贝到内部 Flash
+8. 清除备份 SRAM 升级标志 → NVIC_SystemReset()
+9. Bootloader: 无升级标志 → 校验 App 栈顶地址 → 跳转
+```
+
+**Why SPI Flash 暂存而非直接写内部 Flash**:
+- **断电安全**: 如果在擦除/编程内部 Flash 时断电，SPI Flash 上保留完整固件镜像，重新上电后 bootloader 自动重试
+- **校验前置**: 固件全部收完并 CRC32 校验通过后才擦除内部 Flash，避免写入损坏固件
+- **UART4 速率匹配**: 115200bps (~11.5KB/s) 写入 SPI Flash 绰绰有余，无需 DMA 流控
+- SPI2 外设已 CubeMX 配置（当前仅 `MX_SPI2_Init()` + GPIO），SPI Flash 驱动复用 F407 现有 BSP 模式
+
+**Why 不用 Dual-Bank**:
+- STM32F407 无硬件 dual-bank 功能（F7/H7 才有），软件模拟需两个 512KB 分区
+- 当前固件 ~200-400KB，但未来可能超过 512KB，且 HAL/lwIP 代码持续膨胀
+- SPI Flash 暂存方案无分区大小限制，更灵活
+
+**备份 SRAM 升级标志**: 使用 STM32F407 4KB 备份 SRAM（`BKP_SRAM_BASE`，VBAT 供电域）。升级标志 = 魔数 `0x0TAF407`，复位后 bootloader 检查此魔数决定进入升级模式还是直接跳转 App。
+
+**Alternatives considered**:
+- 直接写内部 Flash: 省去 SPI Flash 步骤，但 UART4 传输中断电→固件损坏→变砖。工业现场不允许
+- Dual-Bank (512KB×2): F407 无硬件支持，软件模拟需维护两份中断向量表偏移，且单分区最大 512KB 限制未来扩展
+
+### 决策 6: UART 协议 OTA 命令扩展 (2026-05-28)
+
+**选择**: 新增 3 个下行命令 (0x20-0x22) + 1 个上行命令 (0x23)，复用现有帧格式
+
+**帧格式不变**: `[AA55][LEN:2B][DEV:1B][CMD:1B][SEQ:1B][DATA:≤128B][CRC16-MODBUS:2B][0D]`
+
+**命令定义**:
+
+| CMD | 方向 | 名称 | 数据 | 响应 |
+|-----|------|------|------|------|
+| 0x20 | ESP32→F407 | `CMD_OTA_BEGIN` | `[size:4B][crc32:4B]` | ACK/NACK |
+| 0x21 | ESP32→F407 | `CMD_OTA_DATA` | `[seq:2B][payload:≤128B]` | ACK+seq / NACK+seq |
+| 0x22 | ESP32→F407 | `CMD_OTA_END` | `[final_crc32:4B]` | ACK/NACK |
+| 0x23 | F407→ESP32 | `RESP_OTA_STATUS` | `[state:1B][progress:1B][error:2B]` | — |
+
+**Why 每帧 128B**: 复用协议现有 `PROTO_PAYLOAD_MAX_SIZE=128`，不做改动。小帧重传粒度好——CRC 错误只需重传 128B 而非整批。F407 bootloader 无 RTOS，极简轮询接收，无需 DMA。
+
+**Why 双重校验 (CRC16+CRC32)**: CRC16-MODBUS 保证帧级传输不出错，CRC32 保证 SPI Flash 暂存的完整固件镜像与 Orange Pi 原始 .bin 逐位一致。两层校验覆盖传输 + 存储两个环节。
+
+**ESP32 中继流程**: ESP32 先从 Orange Pi HTTP 下载 F407 固件到 PSRAM（ESP32-S3 有 8MB PSRAM，1MB 固件绰绰有余），校验 CRC32，然后 UART4 逐帧发送给 F407。每 10 帧通过 MQTT 上报一次进度到 `EdgeVib/{site}/ota/esp32/status`。
+
+**Alternatives considered**:
+- 更大的 payload 每帧: 需改 PROTO_PAYLOAD_MAX_SIZE，影响所有现有协议帧内存分配。不值为 OTA 单独改动
+- 无 CRC32 仅帧 CRC16: 传输无错但无法保证 SPI Flash 暂存文件完整性（断电/Flash bit rot 无法检测）
+- ESP32 流式转发不缓存: 如果 HTTP 下载中断，F407 会卡在升级中状态。完整缓存→校验→再发送更安全
+
+### 决策 7: 固件版本管理与 version.json 格式 (2026-05-28)
+
+**选择**: 语义版本号 (maj.min.patch) + 单一 `version.json` 文件包含所有平台
+
+**version.json 格式** (Orange Pi HTTP 服务 `/firmware/version.json`):
+```json
+{
+  "esp32": {
+    "latest_version": "1.2.3",
+    "build_date": "2026-05-28",
+    "file": "esp32-gateway-1.2.3.bin",
+    "size": 2097152,
+    "sha256": "<hex>",
+    "min_hardware_rev": "v1.0",
+    "release_notes": "Fix MQTT reconnect; optimize FFT window"
+  },
+  "f407": {
+    "latest_version": "1.0.1",
+    "build_date": "2026-05-28",
+    "file": "f407-node-1.0.1.bin",
+    "size": 262144,
+    "sha256": "<hex>",
+    "min_hardware_rev": "v1.0",
+    "release_notes": "Fix CAN RX ISR priority; add ADC calibration"
+  }
+}
+```
+
+**Why 单一 version.json**: ESP32 一次 HTTP GET 就知道自身 + F407 的固件是否需要更新。ESP32 自身用 `ota_update_check_version()`，F407 版本通过 UART4 `CMD_OTA_BEGIN` 时附带当前版本号，Orange Pi 侧可追踪。`min_hardware_rev` 防止新版固件刷到不兼容的旧硬件上。
+
+**升级触发**:
+- ESP32 自身: 每小时定时轮询 `version.json`，发现 `latest_version` > 自身 → HTTP 下载 → `esp_ota_*` 升级
+- F407: ESP32 轮询时对比 `f407.latest_version` vs 上次记录 → 如有更新 → HTTP 下载 F407 .bin → UART4 中继
+
+**TimescaleDB 持久化**: `firmware_versions` 表（平台+版本+文件元数据）+ `upgrade_history` 表（设备级升级记录：从哪版→到哪版→状态→耗时）。Grafana 可按平台/设备过滤升级历史。
+
+**Why 不用强制升级**: 工业现场设备不能随意重启。升级由运维人员在 OTA Server REST API 手动触发（`POST /api/v1/firmware/upgrade`），版本检查是告警通知（"有新固件"），不是自动执行。
+
+### 决策 8: ESP32 OTA 集成 — 分区表 + 主程序改造 (2026-05-28)
+
+**选择**: 标准双 OTA 分区 + HTTP 明文 + 主程序集成
+
+**分区表改造** (`partitions.csv`):
+```
+otadata,  data, ota,     0x9000,  0x2000
+ota_0,    app,  ota_0,   0x20000, 0x1E0000
+ota_1,    app,  ota_1,   0x200000,0x1E0000
+```
+每分区 ~1.9MB，当前 ESP32 固件约 1.2MB，留 ~700KB 余量。`otadata` 分区由 ESP-IDF OTA 子系统管理，记录当前启动分区和回滚状态。
+
+**SDK Config**:
+- `CONFIG_PARTITION_TABLE_CUSTOM=y` → 保持，使用自定义 partitions.csv
+- `CONFIG_OTA_ALLOW_HTTP=y` → 允许 HTTP OTA（Orange Pi 在内网 192.168.2.0/24，TLS 无安全收益）
+- Flash 大小需确认：sdkconfig.defaults 标注 16MB vs 分区表注释 4MB 存在矛盾，以实际焊接的 ESP32-S3 模块 Flash 为准（预期 16MB，PSRAM 8MB）
+
+**主程序集成** (`esp32-gateway.c`):
+- `app_main()`: 调用 `ota_update_init()` 初始化 OTA 模块
+- 新增 OTA 检查任务（低优先级，1KB 栈）: 每小时 GET `version.json` → 比较版本 → 自动下载升级 ESP32 → 检查 F407 版本 → 如有新版本下载到 PSRAM → UART4 中继
+- F407 中继子模块: `ota_relay.c` — 封装 CMD_OTA_BEGIN/DATA/END 的 UART4 发送 + ACK/NACK 处理 + 重传逻辑
+- MQTT 上报升级状态到 `EdgeVib/{site_id}/ota/{device_id}/status`
+
+### 决策 9: OTA Server 项目结构与 Phase 划分 (2026-05-28)
+
+**选择**: 10 源文件 Go Docker 服务，Phase 1 仅 ESP32 中继主通道，rs232-gateway 下行备用延后
+
+**源码树**:
+```
+services/ota-server/
+├── Dockerfile                          — multi-stage: golang:1.22-alpine → alpine:3.19
+├── go.mod                              — module edgevib/ota-server
+├── cmd/server/main.go                  — 入口
+└── internal/
+    ├── config/config.go                — YAML 配置 struct
+    ├── db/client.go                    — pgxpool + firmware_versions/upgrade_history CRUD
+    ├── mqtt/subscriber.go              — 订阅 OTA 状态上报
+    ├── filestore/store.go              — /opt/edge-gateway/firmware/ 固件文件管理
+    ├── handler/
+    │   ├── health.go                   — GET /api/v1/health
+    │   ├── firmware.go                 — POST upload, GET versions, GET history, POST upgrade
+    │   └── version.go                  — GET /firmware/version.json (动态生成), GET /*.bin (下载)
+    └── middleware/
+        ├── logging.go                  — 请求日志
+        └── recovery.go                 — panic recovery
+```
+
+**Why Phase 1 不做 rs232-gateway 下行**: rs232-gateway 当前仅做上行（serial read→MQTT publish），新增下行需：MQTT subscribe → 解析 OTA 命令 → serial write → 等待 F407 响应 → MQTT publish 结果。这是双向串口协议，与现有单向架构有本质差异。且 ESP32 正常运行时 UART4 主通道完全覆盖，备通道只在 ESP32 挂机时用——工业场景 ESP32 挂机率极低。Phase 2 再补齐。
+
+**配置**: `config/ota-server.yaml`，4-section YAML (server/firmware/timescaledb/mqtt)，对标 api-server 配置惯例。
+
+### 决策 10: OTA 状态上报 MQTT Topic + TimescaleDB 持久化 (2026-05-28)
+
+**选择**: 每个设备两个 topic (status + version) + 两张 TimescaleDB 表
+
+**MQTT Topics**:
+| Topic | 方向 | 用途 | Payload 要点 |
+|-------|------|------|-------------|
+| `EdgeVib/{site_id}/ota/{device_id}/status` | ESP32→Orange Pi | 升级进度上报 | `{device_id, platform, from_ver, to_ver, state, progress_pct, error}` |
+| `EdgeVib/{site_id}/ota/{device_id}/version` | ESP32→Orange Pi | 当前版本周期性上报 | `{device_id, platform, current_version, build_date}` |
+
+**Why 两个 topic**: `status` 是事件驱动（升级时密集发送，平时不发），`version` 是周期心跳（每 10 分钟，与 health heartbeat 同频）。拆分避免 status topic 被 version 心跳淹没，consumer 可单独订阅关心的 topic。QoS 1，Retained=false。
+
+**TimescaleDB 新表**:
+```sql
+CREATE TABLE firmware_versions (
+    time            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    platform        TEXT NOT NULL,        -- 'esp32' | 'f407'
+    version         TEXT NOT NULL,        -- '1.2.3' (semver)
+    file_name       TEXT NOT NULL,
+    file_size_bytes BIGINT NOT NULL,
+    sha256          TEXT NOT NULL,
+    min_hardware_rev TEXT,
+    release_notes   TEXT,
+    uploaded_by     TEXT,
+    PRIMARY KEY (platform, version)
+);
+
+CREATE TABLE upgrade_history (
+    time            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    platform        TEXT NOT NULL,
+    device_id       TEXT NOT NULL,
+    from_version    TEXT,
+    to_version      TEXT NOT NULL,
+    status          TEXT NOT NULL,        -- 'downloading'|'installing'|'success'|'failed'|'rolled_back'
+    progress_pct    INT,
+    error_message   TEXT,
+    duration_ms     BIGINT,
+    triggered_by    TEXT DEFAULT 'auto'   -- 'auto'|'manual'
+);
+```
+
+**Why `firmware_versions` 用 (platform, version) 复合主键而非自增 ID**: 同一平台同一版本只能有一条记录，复合主键天然去重。升级历史用时间分区键 + `device_id` 索引，Grafana 可按设备过滤升级记录。
+
+**OTA Server 消费**: MQTT subscriber → `handleStatusReport()` → `INSERT INTO upgrade_history`。`version.json` 端点从 `firmware_versions` 表动态生成（`SELECT DISTINCT ON (platform) * ORDER BY platform, time DESC`）。
+
+### 决策 11: 端到端升级流程 + 安全 + 测试 (2026-05-28)
+
+**选择**:
+
+**升级流程 — ESP32 自身**:
+```
+Orange Pi                     ESP32-S3
+  ← GET /firmware/version.json   每小时轮询
+  → 200 JSON                     比较 esp32.latest_version > current → 触发
+  ← GET /firmware/esp32/*.bin    HTTP Range 分片下载（支持断点续传）
+  → stream .bin                  SHA256 校验
+                                  MQTT: status="downloading"
+                                  esp_ota_begin/write/end
+                                  MQTT: status="installing"
+                                  esp_ota_set_boot_partition()
+                                  MQTT: status="success"
+                                  vTaskDelay(3s) → esp_restart()
+                                  (新固件启动)
+                                  MQTT: version={new_ver}
+  ← MQTT status ───────────────── ota-server → upgrade_history
+```
+
+**升级流程 — F407 (ESP32 中继)**:
+```
+Orange Pi      ESP32-S3                    STM32F407
+  ← GET version.json  每小时轮询
+  → 200 JSON          f407.latest_version > known → 触发
+  ← GET f407/*.bin    → PSRAM, CRC32
+                       MQTT: status="downloading" (F407)
+                       ── CMD_OTA_BEGIN ──→  (App) → 备份SRAM → 复位
+                       ←── ACK ───────────  (Bootloader 就绪)
+                       ── DATA ×8192 ────→  → SPI Flash
+                       ←── ACK/NACK ──────
+                       MQTT: status="installing", progress=X%
+                       ── CMD_OTA_END ────→
+                                             CRC32 → 擦除内部Flash → 拷贝
+                       ←── ACK + STATUS ──  → 复位 → App
+                       MQTT: status="success"
+  ← MQTT status ─────── ota-server → upgrade_history
+```
+
+**安全策略**: Phase 1 SHA256 校验，不做固件代码签名。Orange Pi 在私有 LAN (192.168.x/24)，固件由运维人员通过 REST API 上传。攻击者如已进入内网可直接操作 Mosquitto/TimescaleDB/Grafana，固件签名不改变威胁面。`min_hardware_rev` 字段防固件版本刷到不兼容硬件。`CONFIG_OTA_ALLOW_HTTP=y` 因内网 TLS 无安全收益。
+
+**测试策略**: 对标 api-server 分层 —— Go 单元测试 (config/filestore/handler 纯逻辑) + Mock 测试 (MQTT subscriber mock + pgx mock) + Python 集成测试 (真实 ota-server Docker + TimescaleDB + Mosquitto，模拟 ESP32 HTTP 轮询 version.json + MQTT 状态上报)。测试数据复用 `tests/integration/insert_test_data.sql`。
+
+### OTA Server 设计决策汇总
+
+| # | 决策项 | 选择 |
+|---|--------|------|
+| 1 | ESP32 OTA 传输 | HTTP 直连 (Orange Pi 提供 version.json + .bin) |
+| 2 | F407 OTA 传输 | 主: ESP32 UART4 中继 + 备: UART5 RS232 直连 |
+| 3 | F103 OTA | 排除，一次性 USB 烧录 |
+| 4 | OTA Server 部署 | Go Docker 独立服务 (net/http + chi + pgx + paho) |
+| 5 | F407 Bootloader | 32KB (Sector0-1) + 外部 SPI Flash 暂存 |
+| 6 | UART 协议扩展 | 3 下行 (0x20-0x22) + 1 上行 (0x23)，CRC16+CRC32 双重校验 |
+| 7 | 版本管理 | 语义版本 + 单一 version.json 含所有平台 |
+| 8 | ESP32 集成 | 双 OTA 分区 + HTTP 明文 + 主程序 OTA 检查任务 + 中继模块 |
+| 9 | 源码结构 | 10 源文件 Go Docker，Phase 1 仅主通道，rs232-gateway 下行 Phase 2 |
+| 10 | MQTT + DB | status/version 双 topic + firmware_versions/upgrade_history 双表 |
+| 11 | 升级流程 + 安全 + 测试 | 端到端双平台流程 + SHA256 无签名 + 分层测试 |
