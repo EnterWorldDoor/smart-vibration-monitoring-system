@@ -96,3 +96,50 @@ CREATE INDEX IF NOT EXISTS idx_vision_site_device_time
     ON vision_captures (site_id, device_id, time DESC);
 
 SELECT add_retention_policy('vision_captures', INTERVAL '60 days', if_not_exists => TRUE);
+
+-- Audio monitoring: high-frequency acoustic features (~8 rows/s per device)
+CREATE TABLE IF NOT EXISTS audio_features (
+    time                 TIMESTAMPTZ NOT NULL,
+    site_id              TEXT NOT NULL,
+    device_id            TEXT NOT NULL,
+    rms_energy           DOUBLE PRECISION,
+    spectral_centroid_hz DOUBLE PRECISION,
+    spectral_kurtosis    DOUBLE PRECISION,
+    hf_lf_ratio          DOUBLE PRECISION,
+    dominant_freq_hz     DOUBLE PRECISION,
+    dominant_amp_db      DOUBLE PRECISION,
+    feature_vector       JSONB          -- 128-bin log-spaced downsampled spectrum
+);
+
+SELECT create_hypertable('audio_features', 'time',
+    chunk_time_interval => INTERVAL '7 days',
+    if_not_exists => TRUE);
+
+CREATE INDEX IF NOT EXISTS idx_audio_features_device_time
+    ON audio_features (site_id, device_id, time DESC);
+
+SELECT add_retention_policy('audio_features', INTERVAL '60 days',
+    if_not_exists => TRUE);
+
+-- Audio monitoring: anomaly event records
+CREATE TABLE IF NOT EXISTS audio_anomalies (
+    time            TIMESTAMPTZ NOT NULL,
+    site_id         TEXT NOT NULL,
+    device_id       TEXT NOT NULL,
+    severity        TEXT NOT NULL,         -- 'warning' | 'critical'
+    trigger_reason  TEXT,                  -- 'rms_energy_exceeded' | 'kurtosis_exceeded' | ...
+    rms_energy      DOUBLE PRECISION,
+    baseline_rms    DOUBLE PRECISION,
+    sigma_level     DOUBLE PRECISION,
+    wav_path        TEXT,
+    duration_ms     INTEGER,
+    metadata        JSONB                  -- extra context (spectral_centroid, kurtosis, etc.)
+);
+
+SELECT create_hypertable('audio_anomalies', 'time', if_not_exists => TRUE);
+
+CREATE INDEX IF NOT EXISTS idx_audio_anomalies_device
+    ON audio_anomalies (site_id, device_id, time DESC);
+
+CREATE INDEX IF NOT EXISTS idx_audio_anomalies_severity
+    ON audio_anomalies (severity, time DESC);
