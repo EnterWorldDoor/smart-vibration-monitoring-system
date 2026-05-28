@@ -9,7 +9,7 @@ Type=simple
 User=orangepi
 Group=dialout
 WorkingDirectory=/opt/edge-gateway
-ExecStart=/opt/edge-gateway/services/rs232-gateway/build/rs232-gateway /opt/edge-gateway/config/rs232-gateway.yaml
+ExecStart=/usr/local/bin/rs232-gateway /opt/edge-gateway/config/rs232-gateway.yaml
 Restart=always
 RestartSec=5
 StandardOutput=journal
@@ -19,12 +19,10 @@ SyslogIdentifier=rs232-gateway
 # Security hardening
 NoNewPrivileges=yes
 PrivateTmp=yes
-ProtectSystem=strict
+ProtectSystem=full
 ProtectHome=yes
-ReadWritePaths=/dev/ttyUSB0 /var/log
+ReadWritePaths=/dev /var/log
 ReadOnlyPaths=/opt/edge-gateway/config
-RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
-RestrictRealtime=yes
 MemoryMax=50M
 
 # Resource limits
