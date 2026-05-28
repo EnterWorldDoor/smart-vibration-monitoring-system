@@ -1,0 +1,4 @@
+# OTA Server integration test dependencies
+pytest>=7.0
+requests>=2.28
+paho-mqtt>=1.6
