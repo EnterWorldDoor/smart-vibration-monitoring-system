@@ -1,0 +1,26 @@
+server:
+  host: "0.0.0.0"
+  port: 8090
+  read_timeout: 10s
+  write_timeout: 30s
+
+firmware:
+  storage_path: "/app/firmware"
+  site_id: "factory1"
+
+timescaledb:
+  host: "timescaledb"
+  port: 5432
+  user: "edgevib"
+  password: "${DB_PASSWORD:-edgevib123}"
+  database: "edgevib_ts"
+
+mqtt:
+  broker: "tcp://mosquitto:1883"
+  client_id: "ota-server"
+  topics:
+    - "EdgeVib/+/ota/+/status"
+
+log:
+  level: "info"
+  format: "json"

@@ -1,20 +1,23 @@
 package handler
 
 import (
+	"context"
 	"net/http"
-
-	"edgevib/ota-server/internal/db"
 
 	"github.com/go-chi/chi/v5"
 )
 
+type HealthChecker interface {
+	PingHealth(ctx context.Context) error
+}
+
 type HealthHandler struct {
-	db           *db.Client
+	db           HealthChecker
 	mqttConnected func() bool
 }
 
-func NewHealthHandler(dbClient *db.Client, mqttConnected func() bool) *HealthHandler {
-	return &HealthHandler{db: dbClient, mqttConnected: mqttConnected}
+func NewHealthHandler(db HealthChecker, mqttConnected func() bool) *HealthHandler {
+	return &HealthHandler{db: db, mqttConnected: mqttConnected}
 }
 
 func (h *HealthHandler) Register(r chi.Router) {
@@ -23,7 +26,7 @@ func (h *HealthHandler) Register(r chi.Router) {
 
 func (h *HealthHandler) ServeHealth(w http.ResponseWriter, r *http.Request) {
 	dbStatus := "ok"
-	if err := h.db.Ping(r.Context()); err != nil {
+	if err := h.db.PingHealth(r.Context()); err != nil {
 		dbStatus = "error"
 	}
 	mqttStatus := "ok"

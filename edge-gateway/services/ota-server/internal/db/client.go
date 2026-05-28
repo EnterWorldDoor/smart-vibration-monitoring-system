@@ -21,6 +21,10 @@ func (c *Client) Ping(ctx context.Context) error {
 	return c.pool.Ping(ctx)
 }
 
+func (c *Client) PingHealth(ctx context.Context) error {
+	return c.pool.Ping(ctx)
+}
+
 type FirmwareVersion struct {
 	ID             int64     `json:"id"`
 	Platform       string    `json:"platform"`

@@ -2137,3 +2137,57 @@ Orange Pi      ESP32-S3                    STM32F407
 | 9 | 源码结构 | 10 源文件 Go Docker，Phase 1 仅主通道，rs232-gateway 下行 Phase 2 |
 | 10 | MQTT + DB | status/version 双 topic + firmware_versions/upgrade_history 双表 |
 | 11 | 升级流程 + 安全 + 测试 | 端到端双平台流程 + SHA256 无签名 + 分层测试 |
+
+### OTA 系统待实现清单
+
+#### Orange Pi 侧 (feature/ota-server — 当前分支)
+
+| 状态 | 文件 | 用途 |
+|------|------|------|
+| ✅ | `services/ota-server/` (14 files) | Go Docker 服务源码 |
+| ✅ | `config/ota-server.yaml` | 4-section 配置 |
+| ✅ | `docker/timescaledb/init.sql` | firmware_versions + upgrade_history 表 |
+| ✅ | `docker/docker-compose.yml` | ota-server 服务编排 |
+| ✅ | `services/ota-server/internal/config/config_test.go` | 配置加载 + DSN + 环境变量展开 |
+| ✅ | `services/ota-server/internal/filestore/store_test.go` | 固件存储 + 路径遍历防护 + 轮转 |
+| ✅ | `services/ota-server/internal/handler/health_test.go` | 健康端点 (DB/MQTT 状态) |
+| ✅ | `services/ota-server/internal/handler/version_test.go` | version.json + 固件下载 + 路径验证 |
+| ✅ | `tests/ota-server/test_end_to_end.py` | 17 个集成测试 (Python + pytest) |
+| ⬜ | 运行 Go 单元测试 | `go test ./internal/...` on Orange Pi |
+| ⬜ | 运行 Python 集成测试 | `pytest tests/ota-server/test_end_to_end.py -v` |
+
+#### ESP32-S3 侧 (firmware/esp32-gateway/)
+
+| 状态 | 任务 | 说明 |
+|------|------|------|
+| ⬜ | 分区表改造 | `partitions.csv`: factory → ota_0/ota_1/otadata (每分区 ~1.9MB) |
+| ⬜ | sdkconfig 修改 | `CONFIG_OTA_ALLOW_HTTP=y` (内网 HTTP 下载) |
+| ⬜ | Flash/PSRAM 确认 | 确认焊装的 ESP32-S3 实际 Flash 大小 (sdkconfig.defaults 写 16MB vs 分区表注释 4MB) |
+| ⬜ | 主程序集成 | `esp32-gateway.c`: `app_main()` 调用 `ota_update_init()` |
+| ⬜ | OTA 检查任务 | 新建 FreeRTOS 任务 (低优先级, 1KB栈): 每小时 GET `/firmware/version.json` → 版本比较 → HTTP下载+升级 |
+| ⬜ | F407 中继模块 | 新建 `components/ota_relay/ota_relay.c`: HTTP下载F407固件→PSRAM→UART4 CMD_OTA_BEGIN/DATA/END 中继 |
+| ⬜ | OTA 状态 MQTT 上报 | 通过现有 MQTT 发布升级进度到 `EdgeVib/{site}/ota/{device_id}/status` |
+| ⬜ | CMakeLists 依赖 | `main/CMakeLists.txt` REQUIRES 添加 `ota_update` + `ota_relay` |
+
+#### STM32 F407 侧 (firmware/stm32_node_vibration/)
+
+| 状态 | 任务 | 说明 |
+|------|------|------|
+| ⬜ | Bootloader 工程 | 新建独立 CubeIDE 工程或构建目标: Sector0-1(32KB), 无RTOS, 极简 UART4+SPI2 |
+| ⬜ | SPI Flash 驱动 | 新建 `bsp/spi_flash/w25q128.c`: 读写擦除 W25Q128 (SPI2, PI0=CS/PI1=SCK/PI3=MOSI/PI2=MISO) |
+| ⬜ | 备份 SRAM 升级标志 | Bootloader 入口: 检查 BKP_SRAM 魔数 `0x0TAF407` → 决定升级或跳转App |
+| ⬜ | OTA 命令处理 | `Modules/protocol/` 新增: CMD 0x20(OTA_BEGIN) → 复位进Bootloader; Bootloader 内处理 0x21(OTA_DATA) + 0x22(OTA_END) |
+| ⬜ | UART4 极简驱动 | Bootloader 内轮询 UART4 RX (无RTOS, 无DMA, 无中断), 与协议 10 状态机帧解析对齐 |
+| ⬜ | CRC32 硬件加速 | 使用 F407 内建 CRC32 单元 (AHB1, `CRC->DR`), 校验固件完整性 |
+| ⬜ | Flash 擦除+编程 | Bootloader HAL_FLASH 擦除 Sector2-11, 从 SPI Flash 逐页拷贝到内部 Flash |
+| ⬜ | App 复位入口 | App 端 `main.c` 新增: 检测 CMD_OTA_BEGIN (0x20) → 写 BKP_SRAM 魔数 → `NVIC_SystemReset()` |
+| ⬜ | 心跳扩展 | 系统状态帧 CMD 0x07 增加 `firmware_version` 字段 (当前8字节→扩展payload) |
+| ⬜ | CubeMX IOC 修改 | 启用 SPI2 (Full Duplex Master)、确认备份 SRAM 时钟使能 (PWR 模块) |
+
+#### rs232-gateway OTA 备通道 (Phase 2)
+
+| 状态 | 任务 | 说明 |
+|------|------|------|
+| ⬜ | 下行能力改造 | `rs232-gateway` 新增 MQTT 订阅 → serial write → 等待 F407 响应 → MQTT publish |
+| ⬜ | 主/备切换状态机 | F407 端监测 ESP32 UART4 心跳, 丢失>3s切UART5, 恢复后切回 (与数据路径一致) |
+| ⬜ | OTA 命令路由 | rs232-gateway 根据 MQTT topic 路由 CMD_OTA_* 到串口或 HTTP |

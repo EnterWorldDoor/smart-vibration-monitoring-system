@@ -17,6 +17,9 @@ type Store struct {
 }
 
 func NewStore(basePath string, logger *slog.Logger) *Store {
+	if logger == nil {
+		logger = slog.New(slog.NewTextHandler(io.Discard, nil))
+	}
 	return &Store{basePath: basePath, logger: logger}
 }
 
