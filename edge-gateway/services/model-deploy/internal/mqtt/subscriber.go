@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"strings"
 	"time"
@@ -12,6 +13,8 @@ import (
 
 	"edgevib/model-deploy/internal/db"
 )
+
+var discardLog = slog.New(slog.NewTextHandler(io.Discard, nil))
 
 type ReloadStatus struct {
 	ModelName string `json:"model_name"`
@@ -31,7 +34,7 @@ type Subscriber struct {
 
 func NewSubscriber(logger *slog.Logger) *Subscriber {
 	if logger == nil {
-		logger = slog.New(slog.DiscardHandler)
+		logger = discardLog
 	}
 	return &Subscriber{
 		logger:   logger,

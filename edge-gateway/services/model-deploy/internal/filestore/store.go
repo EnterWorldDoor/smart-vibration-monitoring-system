@@ -12,6 +12,8 @@ import (
 	"strings"
 )
 
+var discardLog = slog.New(slog.NewTextHandler(io.Discard, nil))
+
 type Store struct {
 	basePath string
 	logger   *slog.Logger
@@ -19,7 +21,7 @@ type Store struct {
 
 func NewStore(basePath string, logger *slog.Logger) *Store {
 	if logger == nil {
-		logger = slog.New(slog.DiscardHandler)
+		logger = discardLog
 	}
 	return &Store{basePath: basePath, logger: logger}
 }

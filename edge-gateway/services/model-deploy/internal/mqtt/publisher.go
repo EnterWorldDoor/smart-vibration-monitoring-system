@@ -17,7 +17,7 @@ type Publisher struct {
 
 func NewPublisher(logger *slog.Logger) *Publisher {
 	if logger == nil {
-		logger = slog.New(slog.DiscardHandler)
+		logger = discardLog
 	}
 	return &Publisher{logger: logger}
 }
