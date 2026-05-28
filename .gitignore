@@ -64,6 +64,9 @@ _pycache_/
 .DS_Store
 Thumbs.db
 
+# CONTEXT.md (domain context docs, not for commit)
+CONTEXT.md
+
 # 其他
 .cproject
 .mxproject
