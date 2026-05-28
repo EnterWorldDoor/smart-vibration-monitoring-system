@@ -1084,6 +1084,327 @@ config/
 
 ## 现场总线扩展
 
+## audio-monitor — 工业声学监测
+
+### 决策 1: 核心工作模式 (2026-05-28)
+
+**选择**: 连续流式监听 + 异常触发保存原始音频片段
+
+**Why**: 工业声学监测的核心价值是捕获突发异常——轴承撞击声、转子碰磨等事件持续时间通常 <100ms。周期性采样（如 vision-service 的 60s 定时抓拍模式）大概率错过瞬态声学事件。Orange Pi 4 Pro 板载麦克风 + 3.5mm 音频插孔提供双输入通道，全志 A733 的 2×A76 + 6×A55 算力在 16kHz 单声道 FFT 下 <1ms，完全支持实时流处理。
+
+**工作流**:
+```
+持续录音 → 滑动窗口 FFT (如 2048 点, Hann 窗, 50% overlap)
+    → 声学特征提取 (频谱质心/频带能量/峰值频率/谱峭度)
+    → 统计基线比对 (动态阈值)
+    → 异常触发 → 保存前 3s + 后 2s 原始 PCM/WAV 到本地文件
+    → 特征 + 元数据 → TimescaleDB 写入
+    → 关键告警 → MQTT 发布
+```
+
+**Alternatives considered**:
+- 周期性采样: 对标 vision-service 模式，CPU 占用低但丢瞬态事件
+- 纯阈值触发: 无持续特征记录，事后无法回溯趋势
+
+### 决策 2: 音频采集参数与 Python 库 (2026-05-28)
+
+**选择**: sounddevice + 16kHz + 16-bit PCM 单声道
+
+**Why**:
+- **sounddevice**: `InputStream(callback=callback_fn)` 直接将音频数据以 numpy 数组传入回调，后续 FFT/特征提取零拷贝。后端 portaudio 是 Linux 音频事实标准，ALSA/PulseAudio/PipeWire 全兼容
+- **16kHz 采样率**: 0-8kHz Nyquist 覆盖轴承故障特征频段 (1-5kHz)、齿轮啮合冲击、转子碰磨谐波。与 ESP32 I2S 麦克风采样率一致，便于跨端特征对齐。FFT 2048 点 <1ms，留足 headroom 给特征提取
+- **16-bit PCM 单声道**: ALSA 硬件原生格式，`np.int16`→`np.float32` 一次转换。异常片段 WAV 标准格式，业界通用。Orange Pi 板载 MEMS 麦克风是单声道
+- **默认参数，可配置覆盖**: `audio.sample_rate: 16000`, `audio.block_size: 2048`, `audio.channels: 1`
+
+**Alternatives considered**:
+- PyAudio: 同样 portaudio 后端但 API 是阻塞式 `read()`，需要手动管理线程。sounddevice 的 callback API 更干净
+- python-alsaaudio: 最轻量但 API 偏底层，缺少 numpy 集成，回调模型需手写
+- 44.1kHz/48kHz: 超声谐波检测有价值但板载 MEMS 频响上限 ~10kHz，高采样率无实际收益。保留配置项后续外接麦克风可用
+
+### 决策 3: 声学特征提取 (2026-05-28)
+
+**选择**: 5 项工业声学指标，与振动特征体系对齐
+
+每 2048 点滑动窗口 (50% overlap, ~64ms@16kHz) 提取：
+
+| # | 特征 | 计算 | 业务含义 |
+|---|------|------|---------|
+| 1 | **RMS 能量** | `sqrt(mean(signal²))` | 总体声压级，持续增大 = 磨损进展 |
+| 2 | **频谱质心** (Hz) | `Σ(f·|X(f)|) / Σ|X(f)|` | 声音"亮度"，向高频漂移 = 轴承缺陷 |
+| 3 | **频谱峭度** | 频带能量的四阶矩/二阶矩² | 冲击性检测，>3 表示瞬态冲击（碰磨/轴承剥落） |
+| 4 | **高低频能量比** | `ΣE(2-8kHz) / ΣE(0-500Hz)` | 高频占比增大 = 早期故障信号 |
+| 5 | **主导频率 + 幅值** | max(|X(f)|) 的 f 和 dB | 跟踪特征频率漂移，与 RPM 相关 |
+
+**Why**: 与 inference-engine 振动 6 项指标 (RMS 趋势/峰值频率/频带能量/DE-NDE ratio/波峰因子/温度相关) 形成 **跨模态互补**：
+
+| 振动指标 | 声学对应 | 联合诊断价值 |
+|---------|---------|------------|
+| RMS 趋势斜率 | RMS 能量趋势 | 振动+声学双升 = 确认恶化，单升 = 传感器异常或工况变化 |
+| 峰值频率漂移 | 主导频率漂移 | 两个物理通道追踪同一故障频率，交叉验证 |
+| 频带能量迁移 | 高低频能量比 | 振动高频↑+声学高频↑ = 轴承磨损；仅振动↑ = 传感器松动 |
+| 波峰因子趋势 | 频谱峭度 | 冲击性信号检测，DE 端振动 + 空气声学双重确认碰磨 |
+
+**特征存储**: TimescaleDB `audio_features` 表 (time, site_id, device_id, rms_energy, spectral_centroid, spectral_kurtosis, hf_lf_ratio, dominant_freq, dominant_amp_db, feature_vector JSONB)。`feature_vector` JSONB 保留完整 128-bin 降采样频谱用于 Grafana 热力图和后续 ML 模型。
+
+**Alternatives considered**:
+- MFCC (13 维): 语音/音乐识别标准特征，但工业声学场景中物理可解释性差——操作员无法理解"第 3 个倒谱系数为什么是 2.7"
+- 仅 RMS: 信息量太少，无法区分"电机启动了"和"轴承坏了"
+
+### 决策 4: 异常检测策略 (2026-05-28)
+
+**选择**: 动态基线 + 多 σ 阈值 (MVP)，预留 Autoencoder 可插拔接口 (Phase 2)
+
+**Why**: MVP 阶段无历史声学训练数据，AE 无法冷启动。动态基线自适应环境噪声变化（白班/夜班背景声差异），与 inference-engine 的 TrendAnalyzer 使用相同的统计方法论（滑动窗口 + 标准差检测）。`audio_features` 表持续积累特征数据后，Phase 2 可训练 AE 模型——代码预留 `anomaly_detector.py` 的可插拔接口（`Detector(ABC)` 基类，`ThresholdDetector` / `AutoencoderDetector` 实现）。
+
+**触发规则**:
+
+| 条件 | 动作 |
+|------|------|
+| `rms_energy > baseline_rms + 3σ` 或 `spectral_centroid > baseline_centroid + 3σ` | 保存异常音频片段 (前 3s + 后 2s WAV) + MQTT 发布 warning 级别报告 |
+| `rms_energy > baseline_rms + 5σ` 或 `spectral_kurtosis > 5.0` | 立即触发保存 + MQTT 发布 critical 级别报告 + 联动 inference-engine 即时推理 |
+| 以上条件持续 > 30s | MQTT 发布持续异常告警，建议现场检查 |
+
+**基线更新**: 60s 滑动窗口，仅在未触发异常时更新（避免异常值污染基线）。启动后前 60s 为热机学习期，不触发异常。
+
+**Alternatives considered**:
+- 静态阈值: 无法适应环境变化，工厂白班/夜班背景噪声差异大
+- Autoencoder 先行: 无训练数据冷启动不可行。预留 `Detector` ABC 接口，Phase 2 切换只需改一行实例化代码
+
+### 决策 5: 部署模式 (2026-05-28)
+
+**选择**: systemd 直接部署（对标 vision-service），`User=orangepi`, `SupplementaryGroups=audio`
+
+**Why**: 三个维度分析——
+
+**1. 硬件直通（最关键）**: `/dev/snd/*` 是 ALSA 音频设备节点。systemd `SupplementaryGroups=audio` 一行搞定。Docker 需要 `--device /dev/snd --group-add audio`，且 portaudio 在容器内枚举 ALSA 设备时如设备节点映射不完整会初始化失败。vision-service 选 systemd 同理（`/dev/video0`→`Group=video`）。
+
+**2. 内存预算**: Orange Pi 4 Pro 4GB 总内存，当前格局——
+- Docker 组件: TimescaleDB (~350MB) + Grafana (~120MB) + inference-engine (~120MB) + llm-analyzer (~300MB, 含 GGUF 模型) + Mosquitto (~25MB) + data-aggregator (~25MB) + api-server (~35MB) ≈ **~975MB**
+- systemd 组件: opcua-server (~4MB) + rs232-gateway (~5MB) + vision-service (~70MB) + dns-relay (~10MB) ≈ **~90MB**
+- Ubuntu 22.04 系统基座 ≈ **~800MB**
+- 合计已用 ≈ **~1.9GB**，剩余 ≈ 2.1GB headroom
+
+audio-monitor Python 运行时 ~50MB，Docker overhead ~15MB（overlayfs + 容器守护进程）。50MB vs 65MB 绝对值不大，但 llm-analyzer 加载大模型时 headroom 宝贵，每 MB 都算。
+
+**3. 架构分层一致性**: 当前部署已形成自然分工——
+- **Docker**: 基础设施 + 无硬件依赖的 AI 服务
+- **systemd**: 需要直接访问硬件设备的服务（`dialout`/`video`/`audio` group）
+
+这不是偶然的，是演化出来的正确分层。audio-monitor 属于第二类。
+
+**Alternatives considered**:
+- Docker: 与 inference-engine/llm-analyzer 统一编排，但 ALSA 硬件访问在容器中有已知兼容性问题（设备节点映射、PulseAudio socket 挂载等），Docker overhead 10-15MB，且破坏"硬件直通→systemd"的架构分层
+
+### 决策 6: 项目结构与构建 (2026-05-28)
+
+**选择**: 7 源文件 + venv + Makefile + systemd unit，对标 vision-service
+
+```
+services/audio-monitor/
+├── Makefile                              — venv + pip install + install systemd
+├── requirements.txt                      — sounddevice, numpy, scipy, paho-mqtt, psycopg2-binary, pyyaml
+├── src/
+│   ├── __init__.py
+│   ├── __main__.py                       — 入口 + 信号处理 + 主循环
+│   ├── config.py                         — YAML 配置 dataclass (对标 vision-service config.py)
+│   ├── audio/
+│   │   ├── __init__.py
+│   │   ├── capture.py                    — sounddevice InputStream callback 封装
+│   │   └── processor.py                  — FFT + 5 项特征提取 + 基线管理
+│   ├── anomaly/
+│   │   ├── __init__.py
+│   │   ├── detector.py                   — Detector ABC + ThresholdDetector 实现
+│   ├── storage/
+│   │   ├── __init__.py
+│   │   └── file_store.py                 — 异常 WAV 文件保存 + 自动轮转清理
+│   ├── db/
+│   │   ├── __init__.py
+│   │   └── client.py                     — TimescaleDB audio_features 表写入 + 基线查询
+│   ├── mqtt/
+│   │   ├── __init__.py
+│   │   ├── publisher.py                  — 异常报告发布 (EdgeVib/{site_id}/audio/{device_id}/alert)
+│   │   └── subscriber.py                 — inference-engine 联动触发订阅
+│   └── health.py                         — 健康上报 (30s MQTT)
+├── systemd/
+│   └── audio-monitor.service             — User=orangepi, SupplementaryGroups=audio
+└── tests/
+    ├── __init__.py
+    ├── conftest.py
+    ├── test_config.py
+    ├── test_capture.py                   — mock sounddevice.InputStream
+    ├── test_processor.py                 — FFT + 特征提取正确性
+    ├── test_detector.py                  — 阈值检测逻辑
+    ├── test_file_store.py
+    └── test_end_to_end.py                — 集成测试: 特征提取 → 异常判定 → 文件保存
+```
+
+**Why**: 源文件数与 vision-service (8 个) 相当，结构平行可互读。所有文件在 `src/` 下，`Makefile` 管理 venv 生命周期（`make venv && make install`）。psycopg2-binary 省去 pg_config 编译依赖。sounddevice 是唯一新增系统依赖（`apt install libportaudio2`）。
+
+### 决策 7: 数据管线集成 (2026-05-28)
+
+**选择**: 双写 TimescaleDB + MQTT，复用现有数据模型
+
+**数据流**:
+```
+板载麦克风/3.5mm Line-In
+    → sounddevice InputStream callback (16kHz, 2048 block, 50% overlap)
+    → processor.py: FFT → 5 项特征 → 基线比对 → 异常判定
+    ├── TimescaleDB: audio_features 表 (全量特征, 每 ~64ms 一行) + audio_anomalies 表 (异常事件, 含 WAV 路径)
+    └── MQTT: EdgeVib/{site_id}/audio/{device_id}/alert (仅异常, QOS 1)
+```
+
+**MQTT Topic**: `EdgeVib/{site_id}/audio/{device_id}/alert`
+
+**alert JSON**:
+```json
+{
+  "device_id": "motor01",
+  "timestamp_utc": "2026-05-28T10:30:15.123Z",
+  "severity": "warning",
+  "trigger_reason": "rms_energy_exceeded",
+  "rms_energy": 0.023,
+  "baseline_rms": 0.008,
+  "sigma_level": 3.5,
+  "spectral_centroid_hz": 2340,
+  "spectral_kurtosis": 2.1,
+  "wav_path": "/var/lib/edgevib/audio/anomalies/motor01_20260528T103015.wav"
+}
+```
+
+**TimescaleDB 新表**:
+
+| 表 | 用途 | 关键列 |
+|----|------|--------|
+| `audio_features` | 全量声学特征时序 | `time, site_id, device_id, rms_energy, spectral_centroid_hz, spectral_kurtosis, hf_lf_ratio, dominant_freq_hz, dominant_amp_db, feature_vector(JSONB)` |
+| `audio_anomalies` | 异常事件记录 | `time, site_id, device_id, severity, trigger_reason, rms_energy, baseline_rms, sigma_level, wav_path, duration_ms, metadata(JSONB)` |
+
+**Why 双写**: TimescaleDB 保证全量特征可查询（Grafana 声学频谱趋势图、与振动数据 JOIN 做跨模态分析），MQTT 解耦即时告警消费方（api-server WebSocket 推送、llm-analyzer 触发故障报告生成）。`feature_vector` JSONB 保留 128-bin 降采样频谱，`audio_features` 表与 `sensor_data` 表的透传策略一致（保留原始信息不退化为固定字段）。
+
+### 决策 8: 音频片段存储 (2026-05-28)
+
+**选择**: 本地文件系统 WAV + TimescaleDB 元数据索引，自动轮转清理
+
+- **存储路径**: `/var/lib/edgevib/audio/anomalies/{device_id}_{ISO8601}.wav`
+- **片段长度**: 异常触发点前 3s + 后 2s = 5s (16-bit 16kHz 单声道 = 160KB/片段)
+- **轮转策略**: 保留最近 100 个片段或 7 天，超出的自动删除（`file_store.py` 中 `rotate_expired_files()`，对标 vision-service 的轮转逻辑）
+- **baseline WAV**: 每 10 分钟保存 2s 正常片段到 `audio/baselines/`，仅保留最新 6 个，用于事后对比
+
+**Why**: 对标 vision-service 的 JPEG 文件存储模式。5s 片段大小 ~160KB，100 个仅 16MB，对 eMMC 几乎无压力。TimescaleDB 不存 blob（`TOAST` 机制在大 blob 场景性能差），存路径指针更高效。与 vision-service 的 `vision_captures` 元数据表模式一致。
+
+### 决策 9: 主循环模型 (2026-05-28)
+
+**选择**: 同步 `while+sleep(0.1)` + `queue.Queue` 桥接 portaudio C 线程
+
+```
+sounddevice callback (portaudio C 线程, 每 64ms):
+  2048 samples → FFT (<1ms) → 特征 → queue.put(features)
+
+主线程 (Python):
+  while running:
+    features = queue.get(timeout=1.0)
+    基线更新 + 异常判定
+    每 1s: 攒批 flush 到 TimescaleDB
+    异常时: WAV 保存 + MQTT 告警发布
+    每 30s: health.report()
+```
+
+**Why**: sounddevice callback 在 portaudio 内部高优先级 C 线程运行，只做快速操作（FFT + 入队）。DB 写入/MQTT 发布等可能阻塞的操作统一在主线程处理。与 vision-service 决策 8 相同理由：只有 2 个数据源（音频流 callback + MQTT 订阅），不需要 asyncio 的全双工 I/O 复杂度。`queue.Queue` 作为 C 线程→Python 主线程的线程安全桥接。
+
+**Alternatives considered**:
+- asyncio: 需要 `loop.call_soon_threadsafe` 桥接 portaudio callback，增加复杂度
+- callback 内直接 DB 写: 阻塞 portaudio 线程导致音频丢帧，不可接受
+
+### 决策 10: 配置文件 (2026-05-28)
+
+**选择**: 4-section YAML (`audio` / `timescaledb` / `mqtt` / `alarm`)，对标 vision-service
+
+```yaml
+audio:
+  device_index: -1              # -1 = 系统默认麦克风, 0/1/... = 指定设备
+  sample_rate: 16000            # Hz, 可配置 8000/16000/44100/48000
+  block_size: 2048              # 每次回调的采样点数
+  channels: 1                   # 单声道
+  overlap_ratio: 0.5            # FFT 窗口重叠比例
+
+timescaledb:
+  host: "localhost", port: 5432
+  dbname: "edgevib_ts", user: "edgevib", password: "edgevib123"
+
+mqtt:
+  broker: "localhost", port: 1883
+  client_id: "edgevib-audio-monitor"
+  qos: 1
+
+alarm:
+  sigma_warning: 3.0            # warning 级别 σ 倍数
+  sigma_critical: 5.0           # critical 级别 σ 倍数
+  baseline_window_s: 60         # 基线计算窗口 (秒)
+  anomaly_sustain_s: 30         # 持续异常 > 此值时升级告警
+  pre_trigger_s: 3              # 异常前保留音频秒数
+  post_trigger_s: 2             # 异常后保留音频秒数
+  learning_period_s: 60         # 启动后热机学习期
+
+logging:
+  level: "info"
+```
+
+**Why**: `audio` section 替代其他服务的 `server`/`camera` section，所有硬件参数可配置，现场调试无需重编译。`alarm` section 将所有阈值集中管理，与 inference-engine `config.yaml` 的 `trend` section 模式一致。`device_index: -1` 默认用系统默认麦克风，调试时随时换设备。
+
+### 决策 11: 测试策略 (2026-05-28)
+
+**选择**: 三层测试 — 单元测试 + Mock 测试 + 端到端测试
+
+| 层级 | 测试对象 | mock 对象 | 验证点 |
+|------|---------|-----------|--------|
+| **单元** | `processor.py` (FFT/特征提取/基线管理) | 无 (纯 numpy 计算) | FFT 正确性 (已知正弦波输入→预期频谱)、基线统计算法、异常判定逻辑 |
+| **单元** | `detector.py` (ThresholdDetector) | 无 (纯数据输入→布尔输出) | σ 阈值边界、持续时长计数、学习期抑制 |
+| **Mock** | `capture.py` (InputStream) | `sounddevice.InputStream` | callback 调用次数、数据格式正确、异常恢复 |
+| **Mock** | `db/client.py` | `psycopg2` | SQL 正确性、重连逻辑、攒批 flush |
+| **Mock** | `mqtt/publisher.py`, `mqtt/subscriber.py` | `paho.mqtt.client` | topic 格式化、JSON 序列化、重连 |
+| **Mock** | `file_store.py` | 文件系统 (tmpdir) | WAV 写入、轮转清理、异常场景 (磁盘满) |
+| **E2E** | 完整管线 | sounddevice (用 WAV 文件回放替代真实麦克风), TimescaleDB, MQTT | 音频输入→特征提取→异常判定→WAV 保存→MQTT 告警完整性 |
+
+**Why 三层而非两层**: 对标 vision-service（5 test_*.py + test_end_to_end.py）。`processor.py` 和 `detector.py` 是纯函数模块，单测覆盖核心算法正确性。`capture.py` 的 sounddevice mock 比真实麦克风更可靠——用已知频率的合成正弦波 WAV 作为输入，验证 FFT 输出精确值。E2E 测试用 WAV 文件回放替代真实麦克风，在 CI 中可运行。
+
+### 关键文件清单
+
+| 文件 | 用途 |
+|------|------|
+| `services/audio-monitor/src/__main__.py` | 入口 + 主循环 |
+| `services/audio-monitor/src/config.py` | YAML 配置 dataclass |
+| `services/audio-monitor/src/audio/capture.py` | sounddevice InputStream callback 封装 |
+| `services/audio-monitor/src/audio/processor.py` | FFT + 5 项特征提取 + 基线管理 |
+| `services/audio-monitor/src/anomaly/detector.py` | Detector ABC + ThresholdDetector 实现 |
+| `services/audio-monitor/src/storage/file_store.py` | WAV 文件保存 + 自动轮转清理 |
+| `services/audio-monitor/src/db/client.py` | TimescaleDB `audio_features` + `audio_anomalies` 表写入 |
+| `services/audio-monitor/src/mqtt/publisher.py` | 异常报告 MQTT 发布 |
+| `services/audio-monitor/src/mqtt/subscriber.py` | inference-engine 联动触发订阅 |
+| `services/audio-monitor/src/health.py` | 健康上报 (30s MQTT) |
+| `services/audio-monitor/systemd/audio-monitor.service` | systemd unit, `SupplementaryGroups=audio` |
+| `services/audio-monitor/Makefile` | venv + pip install + 一键安装 |
+| `services/audio-monitor/requirements.txt` | sounddevice, numpy, scipy, paho-mqtt, psycopg2-binary, pyyaml |
+| `config/audio-monitor.yaml` | 4-section 配置 |
+| `docker/timescaledb/init.sql` | 追加 `audio_features` + `audio_anomalies` 建表 DDL |
+| `tests/test_config.py`, `test_processor.py`, `test_detector.py`, `test_capture.py`, `test_file_store.py`, `test_db_client.py`, `test_end_to_end.py` | 三层测试覆盖 |
+
+### audio-monitor 设计决策汇总
+
+| # | 决策项 | 选择 |
+|---|--------|------|
+| 1 | 核心工作模式 | 连续流式监听 + 异常触发保存原始音频 |
+| 2 | 音频采集 | sounddevice + 16kHz + 16-bit PCM 单声道 |
+| 3 | 声学特征 | 5 项工业指标 (RMS/频谱质心/频谱峭度/高低频能量比/主导频率) |
+| 4 | 异常检测 | 动态基线 + σ 阈值 (MVP)，预留 AE 可插拔接口 |
+| 5 | 部署模式 | systemd, `User=orangepi`, `SupplementaryGroups=audio` |
+| 6 | 项目结构 | 11 源文件 + venv + Makefile (对标 vision-service) |
+| 7 | 数据管线 | 双写 TimescaleDB (audio_features/audio_anomalies) + MQTT |
+| 8 | 文件存储 | WAV 文件系统 + 元数据索引 + 自动轮转清理 |
+| 9 | 主循环模型 | 同步 `while+sleep` + `queue.Queue` 桥接 portaudio C 线程 |
+| 10 | 配置文件 | 4-section YAML (audio/timescaledb/mqtt/alarm) |
+| 11 | 测试策略 | 三层: 单元 + Mock + E2E (WAV 文件回放替代真实麦克风) |
+
+---
+
 - **RS485/Modbus RTU**: F407 USART3 复用为 RS485 方向控制, Orange Pi 通过 USB-RS485 接入。OPC UA Server 做 Modbus ↔ OPC UA 协议网关
 - **CAN**: 已用于 F407 ↔ F103 NDE 节点 (ADXL345 振动采集)。Orange Pi 侧暂不额外接入 CAN
 - **Ethernet**: F407 LAN8720 PHY + lwIP TCP, 预留直连 Orange Pi 的能力

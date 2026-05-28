@@ -1,0 +1,32 @@
+[Unit]
+Description=EdgeVib Audio Monitor Service — Acoustic Anomaly Detection
+Documentation=https://github.com/EnterWorldDoor/smart-vibration-monitoring-system
+After=network.target mosquitto.service
+Wants=mosquitto.service
+
+[Service]
+Type=simple
+User=orangepi
+SupplementaryGroups=audio
+WorkingDirectory=/opt/edge-gateway/services/audio-monitor
+ExecStart=/opt/edge-gateway/services/audio-monitor/venv/bin/python -m src --config /opt/edge-gateway/config/audio-monitor.yaml
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=audio-monitor
+
+# Security hardening (mirrors vision-service unit)
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/edgevib/audio
+ReadOnlyPaths=/opt/edge-gateway/config
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictRealtime=yes
+MemoryMax=80M
+LimitNOFILE=1024
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,44 @@
+# EdgeVib Audio Monitor Service Configuration
+# Industrial acoustic monitoring — continuous streaming + anomaly-triggered WAV save
+
+devices:
+  - site_id: "factory1"
+    device_id: "audio01"
+    label: "1号电机区域 — 声学监测"
+
+audio:
+  device_index: 1           # ES8389 I2S codec (hw:1,0); -1=default (virtual, broken)
+  sample_rate: 16000        # Hz
+  block_size: 2048
+  channels: 1
+  dtype: "int16"
+  overlap_ratio: 0.5
+  storage_path: "/var/lib/edgevib/audio"
+
+timescaledb:
+  host: "localhost"
+  port: 5432
+  dbname: "edgevib_ts"
+  user: "edgevib"
+  password: "edgevib123"
+  sslmode: "disable"
+
+mqtt:
+  broker: "localhost"
+  port: 1883
+  client_id: "edgevib-audio-monitor"
+  qos: 1
+  subscribe_topic: "EdgeVib/+/inference/+/ai/report"
+  publish_topic: "EdgeVib/{site_id}/audio/{device_id}/alert"
+
+alarm:
+  sigma_warning: 3.0
+  sigma_critical: 5.0
+  baseline_window_s: 60
+  anomaly_sustain_s: 30
+  pre_trigger_s: 3
+  post_trigger_s: 2
+  learning_period_s: 60
+
+logging:
+  level: "info"
