@@ -32,6 +32,7 @@
 #include "../bsp/motor/bsp_motor.h"
 #include "../bsp/motor/bsp_motor_pid.h"
 #include "../bsp/motor/bsp_motor_fault.h"
+#include "../bootloader/bsp/backup_sram.h"
 #ifdef USE_GUI
 #include "gui/gui_app.h"
 #endif
@@ -43,6 +44,9 @@
 #define PID_MAX_TARGET_RPM       3000
 #define MOTOR_STATUS_REPORT_MS   2000  /* 2s上报一次 */
 #define UART4_TX_TIMEOUT_MS      50
+
+#define FW_VERSION_MAJOR         2     /* 固件主版本 (CMD 0x07 payload[5]) */
+#define FW_VERSION_MINOR         0     /* 固件次版本 (CMD 0x07 payload[6]) */
 
 /* ==================== 模块内部状态 ==================== */
 
@@ -162,6 +166,30 @@ static void execute_motor_command(uint8_t cmd, const uint8_t *data,
 		return;
 	}
 
+	if (cmd == PROTO_CMD_OTA_BEGIN) {
+		if (len >= 8) {
+			uint32_t fw_size = data[0] |
+				((uint32_t)data[1] << 8) |
+				((uint32_t)data[2] << 16) |
+				((uint32_t)data[3] << 24);
+			uint32_t fw_crc = data[4] |
+				((uint32_t)data[5] << 8) |
+				((uint32_t)data[6] << 16) |
+				((uint32_t)data[7] << 24);
+
+			pr_info_with_tag("OTA",
+				"OTA BEGIN: size=%lu crc=0x%08lX\n",
+				(unsigned long)fw_size, (unsigned long)fw_crc);
+
+			bkpsram_init();
+			bkpsram_write_ota_flag(fw_size, fw_crc);
+			wdg_disable_for_ota();
+			osDelay(50);
+			NVIC_SystemReset();
+		}
+		return;
+	}
+
 	if (cmd != PROTO_CMD_MOTOR_CONTROL)
 		return;
 
@@ -265,8 +293,8 @@ static void send_system_status(uint8_t event_source)
 	payload[2] = (uint8_t)iso_get_safety_state();
 	payload[3] = (uint8_t)iso_get_health_level();
 	payload[4] = event_source;
-	payload[5] = 0;
-	payload[6] = 0;
+	payload[5] = FW_VERSION_MAJOR;   /* 固件主版本号 */
+	payload[6] = FW_VERSION_MINOR;   /* 固件次版本号 */
 	payload[7] = 0;
 
 	frame_len = proto_build_generic_frame(frame, PROTO_CMD_SYSTEM_STATUS,

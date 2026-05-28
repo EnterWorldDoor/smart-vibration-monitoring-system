@@ -60,6 +60,28 @@
 #define CMD_NDE_HEARTBEAT         0x18     /**< NDE 节点心跳 (F407→ESP32) */
 #define CMD_NDE_DUAL_DIAG         0x19     /**< 双通道对比诊断 (预留) */
 
+/* ==================== OTA 固件升级命令 (ESP32↔F407) ==================== */
+
+#define CMD_OTA_BEGIN             0x20     /**< OTA开始 (ESP32→F407): size(4B LE) + crc32(4B LE) */
+#define CMD_OTA_DATA              0x21     /**< OTA数据块 (ESP32→F407): offset(4B LE) + data(N bytes) */
+#define CMD_OTA_END               0x22     /**< OTA结束 (ESP32→F407): total_size(4B LE) + final_crc(4B LE) */
+#define CMD_OTA_STATUS            0x23     /**< OTA状态上报 (F407→ESP32): state(1B) + progress(1B) + error(2B) */
+
+/* OTA 状态码 (CMD_OTA_STATUS payload[0]) */
+#define OTA_STAT_READY            0x00
+#define OTA_STAT_RECEIVING        0x01
+#define OTA_STAT_WRITING          0x02
+#define OTA_STAT_SUCCESS          0x03
+#define OTA_STAT_ERROR            0xFF
+
+/* OTA 错误码 (CMD_OTA_STATUS payload[2-3], LE) */
+#define OTA_ERR_FLASH_ERASE       0x01
+#define OTA_ERR_FLASH_WRITE       0x02
+#define OTA_ERR_FLASH_READ        0x03
+#define OTA_ERR_CRC_MISMATCH      0x04
+#define OTA_ERR_INTERNAL_ERASE    0x05
+#define OTA_ERR_INTERNAL_WRITE    0x06
+
 /* 系统命令 */
 #define CMD_ACK                   0xF0     /**< ACK 确认帧 */
 #define CMD_NACK                  0xF1     /**< NACK 否定确认 */

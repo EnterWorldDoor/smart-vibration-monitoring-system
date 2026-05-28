@@ -15,6 +15,21 @@
 #include <stdlib.h>
 #include <time.h>
 
+/* ==================== 订阅管理 ==================== */
+
+#define MAX_SUBSCRIPTIONS 16
+
+struct subscription {
+	char            topic[256];
+	int             qos;
+	mqtt_msg_cb_t   callback;
+	void           *user_data;
+	int             mid;         /* mosquitto subscription message ID */
+};
+
+static struct subscription g_subs[MAX_SUBSCRIPTIONS];
+static int                 g_sub_count;
+
 /* ==================== 内部状态 ==================== */
 
 static struct mosquitto *g_mosq = NULL;
@@ -32,6 +47,16 @@ static void on_connect(struct mosquitto *mosq, void *obj, int rc)
         g_connected = 1;
         fprintf(stdout, "[%ld] INFO  rs232-gw: MQTT connected to broker\n",
                 (long)time(NULL));
+
+        /* 重新订阅所有已注册主题 */
+        for (int i = 0; i < g_sub_count; i++) {
+            int ret = mosquitto_subscribe(g_mosq, &g_subs[i].mid,
+                                          g_subs[i].topic, g_subs[i].qos);
+            if (ret == MOSQ_ERR_SUCCESS) {
+                fprintf(stdout, "[%ld] INFO  rs232-gw: MQTT re-subscribed to '%s'\n",
+                        (long)time(NULL), g_subs[i].topic);
+            }
+        }
     } else {
         g_connected = 0;
         fprintf(stderr, "[%ld] WARN  rs232-gw: MQTT connect failed (rc=%d): %s\n",
@@ -56,6 +81,25 @@ static void on_publish(struct mosquitto *mosq, void *obj, int mid)
     (void)mosq;
     (void)obj;
     (void)mid;
+}
+
+static void on_message(struct mosquitto *mosq, void *obj,
+		       const struct mosquitto_message *msg)
+{
+    (void)mosq;
+    (void)obj;
+
+    if (!msg || !msg->topic)
+        return;
+
+    for (int i = 0; i < g_sub_count; i++) {
+        if (strcmp(g_subs[i].topic, msg->topic) == 0 &&
+            g_subs[i].callback) {
+            g_subs[i].callback(msg->topic, msg->payload,
+                               (size_t)msg->payloadlen,
+                               g_subs[i].user_data);
+        }
+    }
 }
 
 /* ==================== URL 解析 ==================== */
@@ -106,6 +150,7 @@ int mqtt_pub_init(const struct mqtt_pub_config *cfg)
     mosquitto_connect_callback_set(g_mosq, on_connect);
     mosquitto_disconnect_callback_set(g_mosq, on_disconnect);
     mosquitto_publish_callback_set(g_mosq, on_publish);
+    mosquitto_message_callback_set(g_mosq, on_message);
 
     char host[256];
     int port;
@@ -147,6 +192,40 @@ int mqtt_pub_send(const char *topic, const void *payload, size_t len)
                 (long)time(NULL), topic, mosquitto_strerror(rc));
         return -1;
     }
+    return 0;
+}
+
+int mqtt_pub_subscribe(const char *topic, int qos, mqtt_msg_cb_t callback,
+                       void *user_data)
+{
+    if (!g_mosq || !topic || !callback)
+        return -1;
+
+    if (g_sub_count >= MAX_SUBSCRIPTIONS) {
+        fprintf(stderr, "[%ld] ERROR rs232-gw: max subscriptions (%d) reached\n",
+                (long)time(NULL), MAX_SUBSCRIPTIONS);
+        return -1;
+    }
+
+    struct subscription *s = &g_subs[g_sub_count];
+    snprintf(s->topic, sizeof(s->topic), "%s", topic);
+    s->qos = qos;
+    s->callback = callback;
+    s->user_data = user_data;
+
+    if (g_connected) {
+        int ret = mosquitto_subscribe(g_mosq, &s->mid, topic, qos);
+        if (ret != MOSQ_ERR_SUCCESS) {
+            fprintf(stderr, "[%ld] ERROR rs232-gw: subscribe '%s' failed: %s\n",
+                    (long)time(NULL), topic, mosquitto_strerror(ret));
+            return -1;
+        }
+    }
+
+    g_sub_count++;
+
+    fprintf(stdout, "[%ld] INFO  rs232-gw: MQTT subscribed to '%s' (qos=%d)\n",
+            (long)time(NULL), topic, qos);
     return 0;
 }
 
