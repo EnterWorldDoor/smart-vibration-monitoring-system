@@ -10,6 +10,7 @@ import time
 from datetime import datetime
 from typing import Optional
 
+import numpy as np
 import psycopg2
 import psycopg2.extras
 import structlog
@@ -74,9 +75,8 @@ class AudioDBClient:
     def buffer_feature(self, ts: datetime, site_id: str,
                         device_id: str, frame: AudioFrame) -> None:
         """Append one frame to in-memory batch.  O(1).  Never blocks."""
-        spec_json = json.dumps(
-            frame.spectrum_128.tolist() if len(frame.spectrum_128) > 0 else []
-        )
+        spec = np.nan_to_num(frame.spectrum_128, nan=0.0, posinf=0.0, neginf=0.0)
+        spec_json = json.dumps(spec.tolist() if len(spec) > 0 else [])
         self._batch.append((
             ts, site_id, device_id,
             float(frame.rms_energy),

@@ -7,7 +7,7 @@ devices:
     label: "1号电机区域 — 声学监测"
 
 audio:
-  device_index: -1          # -1 = system default microphone
+  device_index: 1           # ES8389 I2S codec (hw:1,0); -1=default (virtual, broken)
   sample_rate: 16000        # Hz
   block_size: 2048
   channels: 1

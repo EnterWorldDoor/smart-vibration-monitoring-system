@@ -198,13 +198,17 @@ class AudioProcessor:
 
     def _downsample_spectrum(self, mag: np.ndarray) -> np.ndarray:
         """Average magnitude into 128 log-spaced frequency bins."""
+        n = len(mag)
         result = np.zeros(128, dtype=np.float32)
         for i in range(128):
             lo = int(self._spectrum_edges[i])
             hi = int(self._spectrum_edges[i + 1])
+            lo = min(lo, n - 1)
+            hi = min(hi, n)
             if hi > lo:
                 result[i] = float(np.mean(mag[lo:hi]))
-        return result
+        # Safety: replace NaN (empty bins) with 0
+        return np.nan_to_num(result, nan=0.0, posinf=0.0, neginf=0.0)
 
     @staticmethod
     def _compute_log_edges(num_bins: int, nyquist: float) -> np.ndarray:
