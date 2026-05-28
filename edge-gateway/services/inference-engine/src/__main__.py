@@ -10,6 +10,7 @@ Architecture:
 
 import asyncio
 import concurrent.futures
+import json
 import signal
 import time
 from datetime import datetime, timezone
@@ -59,6 +60,7 @@ class InferenceEngine:
         self.autoencoder.load()
         self.db.connect()
         self.mqtt_sub.set_trigger_callback(self._on_trigger)
+        self.mqtt_sub.set_reload_callback(self._on_reload)
         self.mqtt_sub.connect()
         self.mqtt_pub.connect()
         self.health.connect()
@@ -99,6 +101,22 @@ class InferenceEngine:
         except asyncio.QueueFull:
             logger.debug("trigger queue full", reason=event.trigger_reason)
 
+    def _on_reload(self, topic: str, payload: dict):
+        """MQTT model reload callback (runs in paho network thread).
+        Queues the reload event to the asyncio main loop for thread-safe execution.
+        """
+        try:
+            self._trigger_queue.put_nowait(TriggerEvent(
+                topic=topic,
+                site_id="",
+                device_type="",
+                device_id="",
+                trigger_reason="model_reload",
+                payload=payload,
+            ))
+        except asyncio.QueueFull:
+            logger.warning("reload: trigger queue full")
+
     async def _main_loop(self):
         interval = self.cfg.schedule.inference_interval_s
         while self._running:
@@ -114,7 +132,10 @@ class InferenceEngine:
             try:
                 event = await asyncio.wait_for(
                     self._trigger_queue.get(), timeout=1.0)
-                await self._handle_trigger(event)
+                if event.trigger_reason == "model_reload":
+                    await self._handle_reload(event)
+                else:
+                    await self._handle_trigger(event)
             except asyncio.TimeoutError:
                 continue
             except Exception:
@@ -226,6 +247,52 @@ class InferenceEngine:
                         "warnings": trend.warnings,
                         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
                     })
+
+    async def _handle_reload(self, event: TriggerEvent):
+        """Handle model reload from MQTT: swap ONNX session with new model file."""
+        payload = event.payload
+        model_name = payload.get("model_name", "unknown")
+        version = payload.get("version", "unknown")
+        file_path = payload.get("file_path", "")
+
+        logger.info("reloading model",
+                    model=model_name, version=version, path=file_path)
+
+        loop = asyncio.get_event_loop()
+        status_topic = self.cfg.mqtt.status_topic.format(
+            site_id=self.cfg.site_id, device_id=model_name)
+
+        try:
+            # Load new session in executor (blocks on file I/O)
+            await loop.run_in_executor(self._executor, self.autoencoder.load)
+            logger.info("model reloaded successfully",
+                       model=model_name, version=version)
+
+            # Publish success status
+            await loop.run_in_executor(self._executor,
+                self.mqtt_pub.client.publish, status_topic,
+                json.dumps({
+                    "model_name": model_name,
+                    "version": version,
+                    "status": "success",
+                    "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+                }), 1)
+        except Exception as e:
+            logger.error("model reload failed",
+                        model=model_name, version=version, err=str(e))
+            # Publish failure status
+            try:
+                await loop.run_in_executor(self._executor,
+                    self.mqtt_pub.client.publish, status_topic,
+                    json.dumps({
+                        "model_name": model_name,
+                        "version": version,
+                        "status": "failed",
+                        "error": str(e),
+                        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+                    }), 1)
+            except Exception:
+                pass
 
     async def _handle_trigger(self, event: TriggerEvent):
         """Handle MQTT trigger: instant inference with retrospective context."""

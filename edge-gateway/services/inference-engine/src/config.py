@@ -31,6 +31,8 @@ class MQTTConfig:
     qos: int = 1
     subscribe_topic: str = "EdgeVib/+/+/+/data/sensor"
     publish_topic: str = "EdgeVib/{site_id}/inference/{device_id}/ai/report"
+    reload_topic: str = "EdgeVib/+/inference/+/model/reload"
+    status_topic: str = "EdgeVib/{site_id}/inference/{device_id}/model/status"
 
 @dataclass
 class TriggerConfig:

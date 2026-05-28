@@ -73,7 +73,7 @@ services:
     container_name: edgevib-inference-engine
     volumes:
       - ../config/inference.yaml:/app/config.yaml:ro
-      - ../services/inference-engine/src/models:/app/src/models:ro
+      - model_data:/app/src/models
       - ../services/inference-engine/src:/app/src:rw
     restart: unless-stopped
     networks:
@@ -134,12 +134,31 @@ services:
       - mosquitto
       - timescaledb
 
+  # === Model Deploy Service (Go model distribution) ===
+  model-deploy:
+    build:
+      context: ../services/model-deploy
+      dockerfile: Dockerfile
+    container_name: edgevib-model-deploy
+    ports:
+      - "8091:8091"
+    volumes:
+      - ../config/model-deploy.yaml:/app/config.yaml:ro
+      - model_data:/app/models
+    restart: unless-stopped
+    networks:
+      - edgevib-net
+    depends_on:
+      - mosquitto
+      - timescaledb
+
 volumes:
   mosquitto_data:
   mosquitto_log:
   timescaledb_data:
   grafana_data:
   firmware_data:
+  model_data:
 
 networks:
   edgevib-net:
