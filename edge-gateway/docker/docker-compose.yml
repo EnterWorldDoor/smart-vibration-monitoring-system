@@ -1,5 +1,3 @@
-version: "3.8"
-
 services:
   # === MQTT Broker ===
   mosquitto:
@@ -118,11 +116,30 @@ services:
       - mosquitto
       - timescaledb
 
+  # === OTA Server (Go firmware distribution) ===
+  ota-server:
+    build:
+      context: ../services/ota-server
+      dockerfile: Dockerfile
+    container_name: edgevib-ota-server
+    ports:
+      - "8090:8090"
+    volumes:
+      - ../config/ota-server.yaml:/app/config.yaml:ro
+      - firmware_data:/app/firmware
+    restart: unless-stopped
+    networks:
+      - edgevib-net
+    depends_on:
+      - mosquitto
+      - timescaledb
+
 volumes:
   mosquitto_data:
   mosquitto_log:
   timescaledb_data:
   grafana_data:
+  firmware_data:
 
 networks:
   edgevib-net:
