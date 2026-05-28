@@ -28,6 +28,7 @@ class MQTTSubscriber:
         self.trigger_cfg = trigger_cfg
         self.client = mqtt.Client(client_id=mqtt_cfg.client_id, protocol=mqtt.MQTTv311)
         self._trigger_callback: Optional[Callable[[TriggerEvent], None]] = None
+        self._reload_callback: Optional[Callable[[str, dict], None]] = None
         self._connected = False
 
         self.client.on_connect = self._on_connect
@@ -37,6 +38,9 @@ class MQTTSubscriber:
 
     def set_trigger_callback(self, cb: Callable[[TriggerEvent], None]):
         self._trigger_callback = cb
+
+    def set_reload_callback(self, cb: Callable[[str, dict], None]):
+        self._reload_callback = cb
 
     def connect(self):
         self.client.connect(self.mqtt_cfg.broker, self.mqtt_cfg.port, 60)
@@ -56,6 +60,9 @@ class MQTTSubscriber:
             topic = self.mqtt_cfg.subscribe_topic
             client.subscribe(topic, qos=self.mqtt_cfg.qos)
             logger.info("mqtt subscribed", topic=topic)
+            reload_topic = self.mqtt_cfg.reload_topic
+            client.subscribe(reload_topic, qos=self.mqtt_cfg.qos)
+            logger.info("mqtt subscribed reload", topic=reload_topic)
         else:
             logger.error("mqtt connect failed", rc=rc)
 
@@ -65,6 +72,16 @@ class MQTTSubscriber:
             logger.warning("mqtt disconnected unexpectedly", rc=rc)
 
     def _on_message(self, client, userdata, msg):
+        # Reload topic: fast path (no trigger parsing needed)
+        if "/model/reload" in msg.topic:
+            if self._reload_callback:
+                try:
+                    payload = json.loads(msg.payload)
+                    self._reload_callback(msg.topic, payload)
+                except json.JSONDecodeError:
+                    logger.warning("reload: invalid JSON payload")
+            return
+
         try:
             payload = json.loads(msg.payload)
         except json.JSONDecodeError:

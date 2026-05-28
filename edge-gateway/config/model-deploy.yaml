@@ -1,0 +1,29 @@
+server:
+  host: "0.0.0.0"
+  port: 8091
+  read_timeout: 10s
+  write_timeout: 30s
+
+models:
+  storage_path: "/app/models"
+  site_id: "factory1"
+  max_versions: 3
+
+timescaledb:
+  host: "timescaledb"
+  port: 5432
+  user: "edgevib"
+  password: "${DB_PASSWORD:-edgevib123}"
+  database: "edgevib_ts"
+  pool_max_conns: 5
+
+mqtt:
+  broker: "tcp://mosquitto:1883"
+  client_id: "model-deploy"
+  publish_topic: "EdgeVib/{site_id}/inference/{device_id}/model/reload"
+  subscribe_topics:
+    - "EdgeVib/+/inference/+/model/status"
+
+log:
+  level: "info"
+  format: "json"
