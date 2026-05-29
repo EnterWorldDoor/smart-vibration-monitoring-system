@@ -69,6 +69,15 @@ func main() {
 	}
 	store := filestore.NewStore(cfg.Models.StoragePath, logger)
 
+	var firmwareStore *filestore.Store
+	if cfg.Models.FirmwareStoragePath != "" {
+		if err := os.MkdirAll(cfg.Models.FirmwareStoragePath, 0755); err != nil {
+			logger.Error("failed to create firmware storage dir", "path", cfg.Models.FirmwareStoragePath, "err", err)
+			os.Exit(1)
+		}
+		firmwareStore = filestore.NewStore(cfg.Models.FirmwareStoragePath, logger)
+	}
+
 	// MQTT Publisher
 	mqttPub := mqtt.NewPublisher(logger)
 	if err := mqttPub.Connect(cfg.MQTT.Broker, cfg.MQTT.ClientID, 10*time.Second); err != nil {
@@ -105,7 +114,7 @@ func main() {
 	healthH := handler.NewHealthHandler(dbClient, mqttPub.IsConnected)
 	healthH.Register(r)
 
-	deployH := handler.NewDeployHandler(dbClient, store, &cfg.Models, mqttPublish, logger)
+	deployH := handler.NewDeployHandler(dbClient, store, firmwareStore, &cfg.Models, mqttPublish, logger)
 	deployH.Register(r)
 
 	rollbackH := handler.NewRollbackHandler(dbClient, &cfg.Models, mqttPublish, logger)

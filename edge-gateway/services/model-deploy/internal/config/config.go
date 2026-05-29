@@ -16,9 +16,10 @@ type ServerConfig struct {
 }
 
 type ModelsConfig struct {
-	StoragePath string `yaml:"storage_path"`
-	SiteID      string `yaml:"site_id"`
-	MaxVersions int    `yaml:"max_versions"`
+	StoragePath         string `yaml:"storage_path"`
+	FirmwareStoragePath string `yaml:"firmware_storage_path"`
+	SiteID              string `yaml:"site_id"`
+	MaxVersions         int    `yaml:"max_versions"`
 }
 
 type TimescaleDBConfig struct {

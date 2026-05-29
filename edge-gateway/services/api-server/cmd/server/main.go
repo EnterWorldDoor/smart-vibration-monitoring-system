@@ -95,6 +95,10 @@ func main() {
 	reportsH := handler.NewReportsHandler(dbClient)
 	reportsH.Register(r)
 
+	// Data export (training data sync)
+	exportH := handler.NewExportHandler(dbClient)
+	exportH.Register(r)
+
 	// WebSocket
 	wsH := handler.NewWSHandler(hub)
 	wsH.Register(r)

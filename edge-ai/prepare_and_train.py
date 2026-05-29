@@ -630,3 +630,36 @@ print("  Autoencoder:  models/saved_models/autoencoder_24.h5" if len(X_normal) >
 print("  Next: update ai_service.h AI_FEATURE_WINDOWS=%d, AI_NUM_FEATURES=%d" %
       (TIME_STEPS, NUM_FEATURES))
 print("        copy model_data.h to firmware/esp32-gateway/components/ai_service/")
+
+# ================================================================
+# Step 8: Auto-deploy TFLite to model-deploy (if configured)
+# ================================================================
+deploy_url = os.environ.get("EDGEVIB_MODEL_DEPLOY_URL")
+if deploy_url and tflite_path:
+	print("\n" + "=" * 60)
+	print(" Step 8: Auto-deploy TFLite to model-deploy")
+	print("=" * 60)
+	version = os.environ.get("EDGEVIB_MODEL_VERSION", datetime.now().strftime("%Y%m%d.%H%M%S"))
+	try:
+		import requests as req
+		with open(tflite_path, "rb") as f:
+			files = {"model_file": (os.path.basename(tflite_path), f, "application/octet-stream")}
+			data = {
+				"model_name": "esp32_classifier",
+				"version": version,
+				"platform": "esp32",
+				"metrics_json": json.dumps({
+					"test_accuracy": float(test_acc),
+					"input_shape": [TIME_STEPS, NUM_FEATURES],
+					"classes": class_names,
+					"keras_accuracy": float(test_acc),
+				}),
+			}
+			deploy_endpoint = deploy_url.rstrip('/') + '/api/v1/models/deploy'
+			resp = req.post(deploy_endpoint, files=files, data=data, timeout=60)
+			if resp.status_code in (200, 201):
+				print(f"  ESP32 TFLite deployed: {version}")
+			else:
+				print(f"  Deploy FAILED ({resp.status_code}): {resp.text}")
+	except Exception as e:
+		print(f"  Deploy request failed: {e}")

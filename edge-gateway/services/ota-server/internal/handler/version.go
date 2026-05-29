@@ -27,7 +27,7 @@ func (h *VersionHandler) Register(r chi.Router) {
 
 type versionEntry struct {
 	LatestVersion  string `json:"latest_version"`
-	BuildDate      string `json:"build_date"`
+	BuildDate      string `json:"build_date,omitempty"`
 	File           string `json:"file"`
 	Size           int64  `json:"size"`
 	SHA256         string `json:"sha256"`
@@ -35,14 +35,22 @@ type versionEntry struct {
 	ReleaseNotes   string `json:"release_notes,omitempty"`
 }
 
+type modelEntry struct {
+	LatestVersion string `json:"latest_version"`
+	File          string `json:"file"`
+	Size          int64  `json:"size"`
+	SHA256        string `json:"sha256"`
+}
+
 func (h *VersionHandler) ServeVersionJSON(w http.ResponseWriter, r *http.Request) {
+	// Firmware versions (existing)
 	latest, err := h.db.GetLatestAllPlatforms(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to query firmware versions")
 		return
 	}
 
-	result := make(map[string]versionEntry)
+	result := make(map[string]interface{})
 	for platform, fw := range latest {
 		result[platform] = versionEntry{
 			LatestVersion:  fw.Version,
@@ -53,6 +61,26 @@ func (h *VersionHandler) ServeVersionJSON(w http.ResponseWriter, r *http.Request
 			MinHardwareRev: fw.MinHardwareRev,
 			ReleaseNotes:   fw.ReleaseNotes,
 		}
+	}
+
+	// Model versions — deployed models on esp32 platform
+	models, err := h.db.GetLatestDeployedModels(r.Context(), "esp32")
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to query model versions")
+		return
+	}
+
+	if len(models) > 0 {
+		modelMap := make(map[string]modelEntry)
+		for _, m := range models {
+			modelMap[m.ModelName] = modelEntry{
+				LatestVersion: m.Version,
+				File:          m.FileName,
+				Size:          m.FileSize,
+				SHA256:        m.SHA256,
+			}
+		}
+		result["models"] = modelMap
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -70,8 +98,13 @@ func (h *VersionHandler) ServeFirmwareFile(w http.ResponseWriter, r *http.Reques
 	filePath := chi.URLParam(r, "*")
 	filePath = strings.TrimPrefix(filePath, "/")
 
-	if strings.Contains(filePath, "..") || !strings.HasSuffix(filePath, ".bin") {
+	// Allow .bin (firmware) and .tflite (models) extensions
+	if strings.Contains(filePath, "..") {
 		writeError(w, http.StatusBadRequest, "invalid file path")
+		return
+	}
+	if !strings.HasSuffix(filePath, ".bin") && !strings.HasSuffix(filePath, ".tflite") {
+		writeError(w, http.StatusBadRequest, "file must be .bin or .tflite")
 		return
 	}
 
