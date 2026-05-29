@@ -20,6 +20,7 @@ type ModelVersion struct {
 	DeployedAt  *time.Time      `json:"deployed_at"`
 	DeployedBy  string          `json:"deployed_by"`
 	UploadedAt  time.Time       `json:"uploaded_at"`
+	Platform    string          `json:"platform"`
 }
 
 type Client struct {
@@ -35,26 +36,27 @@ func (c *Client) PingHealth(ctx context.Context) error {
 }
 
 func (c *Client) InsertModelVersion(ctx context.Context, mv *ModelVersion) (int64, error) {
-	sql := `INSERT INTO model_versions (model_name, version, file_path, file_size, sha256, metrics_json, deployed_at, deployed_by)
-	        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+	sql := `INSERT INTO model_versions (model_name, version, file_path, file_size, sha256, metrics_json, deployed_at, deployed_by, platform)
+	        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 	        ON CONFLICT (model_name, version)
-	        DO UPDATE SET file_path=$3, file_size=$4, sha256=$5, metrics_json=$6, uploaded_at=NOW()
+	        DO UPDATE SET file_path=$3, file_size=$4, sha256=$5, metrics_json=$6, platform=$9, uploaded_at=NOW()
 	        RETURNING id`
 	var id int64
 	err := c.pool.QueryRow(ctx, sql,
 		mv.ModelName, mv.Version, mv.FilePath, mv.FileSize, mv.SHA256,
-		mv.MetricsJSON, mv.DeployedAt, mv.DeployedBy,
+		mv.MetricsJSON, mv.DeployedAt, mv.DeployedBy, mv.Platform,
 	).Scan(&id)
 	return id, err
 }
 
 func (c *Client) GetModelVersion(ctx context.Context, modelName, version string) (*ModelVersion, error) {
-	sql := `SELECT id, model_name, version, file_path, file_size, sha256, metrics_json, deployed_at, deployed_by, uploaded_at
+	sql := `SELECT id, model_name, version, file_path, file_size, sha256, metrics_json, deployed_at, deployed_by, uploaded_at, platform
 	        FROM model_versions WHERE model_name = $1 AND version = $2`
 	var mv ModelVersion
 	err := c.pool.QueryRow(ctx, sql, modelName, version).Scan(
 		&mv.ID, &mv.ModelName, &mv.Version, &mv.FilePath, &mv.FileSize,
 		&mv.SHA256, &mv.MetricsJSON, &mv.DeployedAt, &mv.DeployedBy, &mv.UploadedAt,
+			&mv.Platform,
 	)
 	if err == pgx.ErrNoRows {
 		return nil, nil
@@ -66,7 +68,7 @@ func (c *Client) GetModelVersion(ctx context.Context, modelName, version string)
 }
 
 func (c *Client) ListModelVersions(ctx context.Context, modelName string) ([]ModelVersion, error) {
-	sql := `SELECT id, model_name, version, file_path, file_size, sha256, metrics_json, deployed_at, deployed_by, uploaded_at
+	sql := `SELECT id, model_name, version, file_path, file_size, sha256, metrics_json, deployed_at, deployed_by, uploaded_at, platform
 	        FROM model_versions WHERE model_name = $1 ORDER BY uploaded_at DESC`
 	rows, err := c.pool.Query(ctx, sql, modelName)
 	if err != nil {
@@ -80,6 +82,7 @@ func (c *Client) ListModelVersions(ctx context.Context, modelName string) ([]Mod
 		if err := rows.Scan(
 			&mv.ID, &mv.ModelName, &mv.Version, &mv.FilePath, &mv.FileSize,
 			&mv.SHA256, &mv.MetricsJSON, &mv.DeployedAt, &mv.DeployedBy, &mv.UploadedAt,
+			&mv.Platform,
 		); err != nil {
 			return nil, err
 		}
@@ -89,7 +92,7 @@ func (c *Client) ListModelVersions(ctx context.Context, modelName string) ([]Mod
 }
 
 func (c *Client) ListAllModels(ctx context.Context) ([]ModelVersion, error) {
-	sql := `SELECT DISTINCT ON (model_name) id, model_name, version, file_path, file_size, sha256, metrics_json, deployed_at, deployed_by, uploaded_at
+	sql := `SELECT DISTINCT ON (model_name) id, model_name, version, file_path, file_size, sha256, metrics_json, deployed_at, deployed_by, uploaded_at, platform
 	        FROM model_versions ORDER BY model_name, uploaded_at DESC`
 	rows, err := c.pool.Query(ctx, sql)
 	if err != nil {
@@ -103,6 +106,7 @@ func (c *Client) ListAllModels(ctx context.Context) ([]ModelVersion, error) {
 		if err := rows.Scan(
 			&mv.ID, &mv.ModelName, &mv.Version, &mv.FilePath, &mv.FileSize,
 			&mv.SHA256, &mv.MetricsJSON, &mv.DeployedAt, &mv.DeployedBy, &mv.UploadedAt,
+			&mv.Platform,
 		); err != nil {
 			return nil, err
 		}
@@ -118,12 +122,13 @@ func (c *Client) MarkDeployed(ctx context.Context, modelName, version, deployedB
 }
 
 func (c *Client) GetDeployedVersion(ctx context.Context, modelName string) (*ModelVersion, error) {
-	sql := `SELECT id, model_name, version, file_path, file_size, sha256, metrics_json, deployed_at, deployed_by, uploaded_at
+	sql := `SELECT id, model_name, version, file_path, file_size, sha256, metrics_json, deployed_at, deployed_by, uploaded_at, platform
 	        FROM model_versions WHERE model_name = $1 AND deployed_at IS NOT NULL ORDER BY deployed_at DESC LIMIT 1`
 	var mv ModelVersion
 	err := c.pool.QueryRow(ctx, sql, modelName).Scan(
 		&mv.ID, &mv.ModelName, &mv.Version, &mv.FilePath, &mv.FileSize,
 		&mv.SHA256, &mv.MetricsJSON, &mv.DeployedAt, &mv.DeployedBy, &mv.UploadedAt,
+			&mv.Platform,
 	)
 	if err == pgx.ErrNoRows {
 		return nil, nil

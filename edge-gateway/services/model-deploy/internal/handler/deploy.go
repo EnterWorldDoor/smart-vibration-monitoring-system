@@ -18,20 +18,22 @@ import (
 var semverRegex = regexp.MustCompile(`^\d+\.\d+\.\d+$`)
 
 type DeployHandler struct {
-	db          *db.Client
-	store       *filestore.Store
-	cfg         *config.ModelsConfig
-	mqttPublish func(topic, modelName, version, filePath string) error
-	logger      *slog.Logger
+	db            *db.Client
+	store         *filestore.Store // ONNX models (orange-pi)
+	firmwareStore *filestore.Store // TFLite models (esp32)
+	cfg           *config.ModelsConfig
+	mqttPublish   func(topic, modelName, version, filePath string) error
+	logger        *slog.Logger
 }
 
-func NewDeployHandler(dbClient *db.Client, store *filestore.Store, cfg *config.ModelsConfig, mqttPublish func(string, string, string, string) error, logger *slog.Logger) *DeployHandler {
+func NewDeployHandler(dbClient *db.Client, store, firmwareStore *filestore.Store, cfg *config.ModelsConfig, mqttPublish func(string, string, string, string) error, logger *slog.Logger) *DeployHandler {
 	return &DeployHandler{
-		db:          dbClient,
-		store:       store,
-		cfg:         cfg,
-		mqttPublish: mqttPublish,
-		logger:      logger,
+		db:            dbClient,
+		store:         store,
+		firmwareStore: firmwareStore,
+		cfg:           cfg,
+		mqttPublish:   mqttPublish,
+		logger:        logger,
 	}
 }
 
@@ -51,6 +53,7 @@ func (h *DeployHandler) Deploy(w http.ResponseWriter, r *http.Request) {
 	modelName := r.FormValue("model_name")
 	version := r.FormValue("version")
 	metricsStr := r.FormValue("metrics_json")
+	platform := r.FormValue("platform")
 
 	if modelName == "" {
 		writeError(w, http.StatusBadRequest, "model_name is required")
@@ -61,6 +64,15 @@ func (h *DeployHandler) Deploy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Default platform for backward compatibility
+	if platform == "" {
+		platform = "orange-pi"
+	}
+	if platform != "orange-pi" && platform != "esp32" {
+		writeError(w, http.StatusBadRequest, "platform must be 'orange-pi' or 'esp32'")
+		return
+	}
+
 	file, header, err := r.FormFile("model_file")
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "model_file is required")
@@ -68,8 +80,13 @@ func (h *DeployHandler) Deploy(w http.ResponseWriter, r *http.Request) {
 	}
 	defer file.Close()
 
-	if !isONNX(header.Filename) {
-		writeError(w, http.StatusBadRequest, "model_file must be a .onnx file")
+	// Validate file extension per platform
+	if platform == "orange-pi" && !isONNX(header.Filename) {
+		writeError(w, http.StatusBadRequest, "model_file must be a .onnx file for orange-pi platform")
+		return
+	}
+	if platform == "esp32" && !isTFLite(header.Filename) {
+		writeError(w, http.StatusBadRequest, "model_file must be a .tflite file for esp32 platform")
 		return
 	}
 
@@ -84,8 +101,18 @@ func (h *DeployHandler) Deploy(w http.ResponseWriter, r *http.Request) {
 		metrics = json.RawMessage("{}")
 	}
 
+	// Pick store based on platform
+	store := h.store
+	if platform == "esp32" {
+		if h.firmwareStore == nil {
+			writeError(w, http.StatusInternalServerError, "firmware store not configured for esp32 platform")
+			return
+		}
+		store = h.firmwareStore
+	}
+
 	// Save file
-	relPath, fileSize, sha256, err := h.store.SaveModel(file, modelName, version)
+	relPath, fileSize, sha256, err := store.SaveModel(file, modelName, version, platform)
 	if err != nil {
 		h.logger.Error("save model failed", "err", err)
 		writeError(w, http.StatusInternalServerError, "failed to save model file")
@@ -103,6 +130,7 @@ func (h *DeployHandler) Deploy(w http.ResponseWriter, r *http.Request) {
 		MetricsJSON: metrics,
 		DeployedAt:  &now,
 		DeployedBy:  "pc-push",
+		Platform:    platform,
 	}
 
 	id, err := h.db.InsertModelVersion(r.Context(), mv)
@@ -114,13 +142,18 @@ func (h *DeployHandler) Deploy(w http.ResponseWriter, r *http.Request) {
 	mv.ID = id
 
 	// Rotate old versions
-	if err := h.store.RotateVersions(modelName, h.cfg.MaxVersions); err != nil {
+	if err := store.RotateVersions(modelName, h.cfg.MaxVersions); err != nil {
 		h.logger.Warn("rotate versions failed", "err", err)
 	}
 
 	// Publish reload via MQTT
 	if h.mqttPublish != nil {
-		reloadTopic := fmt.Sprintf("EdgeVib/%s/inference/%s/model/reload", h.cfg.SiteID, modelName)
+		var reloadTopic string
+		if platform == "esp32" {
+			reloadTopic = fmt.Sprintf("EdgeVib/%s/esp32/%s/model/reload", h.cfg.SiteID, modelName)
+		} else {
+			reloadTopic = fmt.Sprintf("EdgeVib/%s/inference/%s/model/reload", h.cfg.SiteID, modelName)
+		}
 		if err := h.mqttPublish(reloadTopic, modelName, version, relPath); err != nil {
 			h.logger.Warn("mqtt reload publish failed", "err", err)
 		}
@@ -129,6 +162,7 @@ func (h *DeployHandler) Deploy(w http.ResponseWriter, r *http.Request) {
 	h.logger.Info("model deployed",
 		"model", modelName,
 		"version", version,
+		"platform", platform,
 		"size", fileSize,
 	)
 
@@ -136,6 +170,7 @@ func (h *DeployHandler) Deploy(w http.ResponseWriter, r *http.Request) {
 		"id":               mv.ID,
 		"model_name":       modelName,
 		"version":          version,
+		"platform":         platform,
 		"file_path":        relPath,
 		"file_size":        fileSize,
 		"sha256":           sha256,
@@ -157,6 +192,7 @@ func (h *DeployHandler) ListAllModels(w http.ResponseWriter, r *http.Request) {
 	type modelSummary struct {
 		ModelName     string     `json:"model_name"`
 		LatestVersion string     `json:"latest_version"`
+		Platform      string     `json:"platform"`
 		DeployedAt    *time.Time `json:"deployed_at"`
 		UploadedAt    time.Time  `json:"uploaded_at"`
 	}
@@ -166,6 +202,7 @@ func (h *DeployHandler) ListAllModels(w http.ResponseWriter, r *http.Request) {
 		result = append(result, modelSummary{
 			ModelName:     mv.ModelName,
 			LatestVersion: mv.Version,
+			Platform:      mv.Platform,
 			DeployedAt:    mv.DeployedAt,
 			UploadedAt:    mv.UploadedAt,
 		})
@@ -222,4 +259,8 @@ func (h *DeployHandler) ListVersions(w http.ResponseWriter, r *http.Request) {
 
 func isONNX(filename string) bool {
 	return len(filename) >= 5 && filename[len(filename)-5:] == ".onnx"
+}
+
+func isTFLite(filename string) bool {
+	return len(filename) >= 7 && filename[len(filename)-7:] == ".tflite"
 }

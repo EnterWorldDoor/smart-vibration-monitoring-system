@@ -6,6 +6,7 @@ server:
 
 models:
   storage_path: "/app/models"
+  firmware_storage_path: "/app/firmware"
   site_id: "factory1"
   max_versions: 3
 

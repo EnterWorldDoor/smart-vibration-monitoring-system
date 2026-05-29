@@ -223,3 +223,40 @@ func (c *Client) ListUpgradeHistory(ctx context.Context, platform, deviceID stri
 	}
 	return history, rows.Err()
 }
+
+// ModelVersionLight holds the fields needed for version.json models section.
+type ModelVersionLight struct {
+	ModelName string
+	Version   string
+	FileName  string
+	FileSize  int64
+	SHA256    string
+}
+
+// GetLatestDeployedModels returns the latest deployed model version for each model
+// on a given platform (e.g. "esp32").
+func (c *Client) GetLatestDeployedModels(ctx context.Context, platform string) ([]ModelVersionLight, error) {
+	rows, err := c.pool.Query(ctx,
+		`SELECT DISTINCT ON (model_name) model_name, version, file_path, file_size, sha256
+		 FROM model_versions
+		 WHERE platform = $1 AND deployed_at IS NOT NULL
+		 ORDER BY model_name, deployed_at DESC`,
+		platform)
+	if err != nil {
+		return nil, fmt.Errorf("get latest deployed models: %w", err)
+	}
+	defer rows.Close()
+
+	var result []ModelVersionLight
+	for rows.Next() {
+		var m ModelVersionLight
+		var filePath string
+		if err := rows.Scan(&m.ModelName, &m.Version, &filePath, &m.FileSize, &m.SHA256); err != nil {
+			return nil, fmt.Errorf("scan model version: %w", err)
+		}
+		// Extract just the filename from the path (e.g. "esp32_classifier/1.0.0.tflite" -> "esp32_classifier_1.0.0.tflite")
+		m.FileName = filePath
+		result = append(result, m)
+	}
+	return result, rows.Err()
+}

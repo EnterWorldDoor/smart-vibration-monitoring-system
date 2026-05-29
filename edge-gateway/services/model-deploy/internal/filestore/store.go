@@ -26,13 +26,17 @@ func NewStore(basePath string, logger *slog.Logger) *Store {
 	return &Store{basePath: basePath, logger: logger}
 }
 
-func (s *Store) SaveModel(reader io.Reader, modelName, version string) (relPath string, fileSize int64, sha256Hex string, err error) {
+func (s *Store) SaveModel(reader io.Reader, modelName, version, platform string) (relPath string, fileSize int64, sha256Hex string, err error) {
 	dir := filepath.Join(s.basePath, modelName)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return "", 0, "", fmt.Errorf("create dir: %w", err)
 	}
 
-	fileName := version + ".onnx"
+	ext := ".onnx"
+	if platform == "esp32" {
+		ext = ".tflite"
+	}
+	fileName := version + ext
 	fullPath := filepath.Join(dir, fileName)
 
 	f, err := os.Create(fullPath)
@@ -112,7 +116,7 @@ func (s *Store) RotateVersions(modelName string, keep int) error {
 	}
 	var files []fileInfo
 	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".onnx") {
+		if e.IsDir() || (!strings.HasSuffix(e.Name(), ".onnx") && !strings.HasSuffix(e.Name(), ".tflite")) {
 			continue
 		}
 		info, err := e.Info()

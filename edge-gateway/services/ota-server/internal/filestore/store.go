@@ -57,6 +57,10 @@ func (s *Store) GetFirmwarePath(platform, fileName string) (string, error) {
 	if strings.Contains(fileName, "..") || strings.Contains(platform, "..") {
 		return "", fmt.Errorf("invalid path")
 	}
+	// .tflite files come from model-deploy and use their stored relative path directly
+	if strings.HasSuffix(fileName, ".tflite") {
+		return filepath.Join(s.basePath, fileName), nil
+	}
 	if !strings.HasSuffix(fileName, ".bin") {
 		return "", fmt.Errorf("invalid file extension")
 	}

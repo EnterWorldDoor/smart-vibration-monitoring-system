@@ -1,0 +1,4 @@
+# P1 Training Data Sync - SPIFFS model partition support
+# Merge with existing sdkconfig.defaults
+CONFIG_SPIFFS_MAX_PARTITIONS=3
+CONFIG_SPIFFS_USE_MTIME=y

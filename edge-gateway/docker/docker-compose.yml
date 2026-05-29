@@ -145,6 +145,7 @@ services:
     volumes:
       - ../config/model-deploy.yaml:/app/config.yaml:ro
       - model_data:/app/models
+      - firmware_data:/app/firmware
     restart: unless-stopped
     networks:
       - edgevib-net

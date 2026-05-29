@@ -204,8 +204,12 @@ CREATE TABLE IF NOT EXISTS model_versions (
     deployed_at  TIMESTAMPTZ,
     deployed_by  TEXT DEFAULT 'pc-push',
     uploaded_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    platform     TEXT NOT NULL DEFAULT 'orange-pi',
     UNIQUE (model_name, version)
 );
 
 CREATE INDEX IF NOT EXISTS idx_model_versions_name
     ON model_versions (model_name, uploaded_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_model_versions_platform
+    ON model_versions (platform, model_name, uploaded_at DESC);
