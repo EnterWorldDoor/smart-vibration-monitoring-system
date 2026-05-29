@@ -74,6 +74,9 @@ func (h *RollbackHandler) Rollback(w http.ResponseWriter, r *http.Request) {
 	// Publish reload via MQTT
 	if h.mqttPublish != nil {
 		reloadTopic := fmt.Sprintf("EdgeVib/%s/inference/%s/model/reload", h.cfg.SiteID, modelName)
+		if mv.Platform == "esp32" {
+			reloadTopic = fmt.Sprintf("EdgeVib/%s/esp32/%s/model/reload", h.cfg.SiteID, modelName)
+		}
 		if err := h.mqttPublish(reloadTopic, modelName, req.Version, mv.FilePath); err != nil {
 			h.logger.Warn("mqtt reload publish failed", "err", err)
 		}

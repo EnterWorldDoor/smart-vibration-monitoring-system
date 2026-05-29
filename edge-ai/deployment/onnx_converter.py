@@ -231,9 +231,48 @@ if __name__ == "__main__":
                        help="Path to Keras .h5 model (default: autoencoder_24.h5)")
     parser.add_argument("--output", type=str, default=None,
                        help="ONNX output filename (default: autoencoder.onnx)")
+    parser.add_argument("--deploy-url", type=str, default=None,
+                       help="model-deploy API URL (e.g. http://192.168.1.1:8091)")
+    parser.add_argument("--model-name", type=str, default="vibration_autoencoder",
+                       help="Model name for deployment (default: vibration_autoencoder)")
+    parser.add_argument("--version", type=str, default=None,
+                       help="Version tag (default: auto-generated from date)")
     cli_args = parser.parse_args()
     if cli_args.h5:
         H5_PATH = Path(cli_args.h5)
     if cli_args.output:
         ONNX_OUT = MODEL_DIR / cli_args.output
     main()
+
+    # Auto-deploy to model-deploy if requested
+    if cli_args.deploy_url and ONNX_OUT.exists():
+        import requests as req
+        version = cli_args.version or datetime.now().strftime("%Y%m%d.%H%M%S")
+        metadata = {}
+        metadata_path = METADATA_OUT if METADATA_OUT.exists() else None
+        if metadata_path:
+            with open(metadata_path) as f:
+                metadata = json.load(f)
+
+        with open(ONNX_OUT, "rb") as f:
+            files = {"model_file": (ONNX_OUT.name, f, "application/octet-stream")}
+            data = {
+                "model_name": cli_args.model_name,
+                "version": version,
+                "platform": "orange-pi",
+                "metrics_json": json.dumps({
+                    "anomaly_threshold": metadata.get("anomaly_threshold"),
+                    "input_dim": metadata.get("input_dim"),
+                }),
+            }
+            try:
+                resp = req.post(
+                    f"{cli_args.deploy_url.rstrip('/')}/api/v1/models/deploy",
+                    files=files, data=data, timeout=60,
+                )
+                if resp.status_code in (200, 201):
+                    print(f"Deployed to model-deploy: {version}")
+                else:
+                    print(f"Deploy FAILED ({resp.status_code}): {resp.text}")
+            except Exception as e:
+                print(f"Deploy request failed: {e}")
