@@ -1,0 +1,41 @@
+# EdgeVib Alertmanager Configuration
+# Routes alerts to MQTT via webhook bridge (alert-webhook service on edgevib-net)
+# See Decision 6, CONTEXT.md
+
+global:
+  resolve_timeout: 5m
+
+# Route tree — all alerts go to MQTT webhook
+route:
+  receiver: 'mqtt-webhook'
+  group_by: ['alertname', 'severity']
+  group_wait: 10s
+  group_interval: 30s
+  repeat_interval: 4h
+
+  # Child routes for severity escalation
+  routes:
+    - match:
+        severity: critical
+      receiver: 'mqtt-webhook'
+      group_wait: 5s
+      repeat_interval: 1h
+    - match:
+        severity: warning
+      receiver: 'mqtt-webhook'
+      repeat_interval: 6h
+
+# Inhibit rules: suppress disk warnings when memory is critical (likely false alarm)
+inhibit_rules:
+  - source_match:
+      alertname: 'HostMemoryCritical'
+      severity: 'critical'
+    target_match:
+      alertname: 'HostDiskWarning'
+    equal: ['instance']
+
+receivers:
+  - name: 'mqtt-webhook'
+    webhook_configs:
+      - url: 'http://alert-webhook:8092/alert'
+        send_resolved: true
