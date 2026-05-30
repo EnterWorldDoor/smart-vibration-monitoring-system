@@ -1,0 +1,82 @@
+# EdgeVib Alert Rules — Phase 1: Infrastructure only
+# 7 rules as specified in Decision 4, CONTEXT.md
+# No CPU usage alerts (llama.cpp inference spikes are expected on A733)
+
+groups:
+  - name: edgevib-infrastructure
+    interval: 30s
+    rules:
+      # --- Memory alerts ---
+      - alert: HostMemoryWarning
+        expr: (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) < 0.15
+        for: 5m
+        labels:
+          severity: warning
+          component: host
+        annotations:
+          summary: "Host memory usage > 85%"
+          description: "Available memory is {{ $value | humanizePercentage }} of total. Orange Pi 4GB headroom critically low."
+
+      - alert: HostMemoryCritical
+        expr: (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) < 0.05
+        for: 2m
+        labels:
+          severity: critical
+          component: host
+        annotations:
+          summary: "Host memory usage > 95% — OOM imminent"
+          description: "Available memory is {{ $value | humanizePercentage }} of total. OOM killer may trigger."
+
+      # --- Disk alerts (monitor root filesystem on SD card) ---
+      - alert: HostDiskWarning
+        expr: (node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"}) < 0.20
+        for: 10m
+        labels:
+          severity: warning
+          component: host
+        annotations:
+          summary: "Host disk usage > 80%"
+          description: "Root filesystem has {{ $value | humanizePercentage }} free. 32GB SD card nearly full."
+
+      - alert: HostDiskCritical
+        expr: (node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"}) < 0.10
+        for: 5m
+        labels:
+          severity: critical
+          component: host
+        annotations:
+          summary: "Host disk usage > 90% — write failure risk"
+          description: "Root filesystem has {{ $value | humanizePercentage }} free. Urgent cleanup required."
+
+      # --- CPU temperature (no chip filter, compatible with Allwinner A733 thermal naming) ---
+      - alert: CPUTemperatureWarning
+        expr: node_hwmon_temp_celsius > 80
+        for: 5m
+        labels:
+          severity: warning
+          component: host
+        annotations:
+          summary: "CPU temperature > 80C"
+          description: "CPU temperature at {{ $value }}C (Tj=105C). Consider active cooling."
+
+      # --- Container OOM kills ---
+      - alert: ContainerOOMKill
+        expr: increase(container_oom_events_total[5m]) > 0
+        for: 0m
+        labels:
+          severity: critical
+          component: containers
+        annotations:
+          summary: "Container OOM killed in last 5 minutes"
+          description: "One or more Docker containers were OOM-killed. Check 'docker logs' for the offending service."
+
+      # --- Prometheus self-monitoring ---
+      - alert: PrometheusDown
+        expr: up{job="prometheus"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          component: monitoring
+        annotations:
+          summary: "Prometheus is down"
+          description: "Prometheus scrape target is unreachable. System monitoring is blind."

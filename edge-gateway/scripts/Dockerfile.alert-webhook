@@ -1,0 +1,6 @@
+FROM python:3.11-alpine
+RUN pip install --no-cache-dir paho-mqtt
+COPY alert-webhook.py /app/alert-webhook.py
+WORKDIR /app
+EXPOSE 8092
+CMD ["python", "alert-webhook.py", "--mqtt-broker", "mosquitto", "--port", "8092"]
