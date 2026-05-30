@@ -1716,13 +1716,15 @@ print_stats:
         if (mqtt_is_connected() && (now - last_ai_health_pub) >= 30000) {
             const ai_health_t *ai_h = ai_service_get_health();
             if (ai_h && ai_h->total_inferences > 0) {
-                char ai_health_json[512];
+                char ai_health_json[640];
                 int len = snprintf(ai_health_json, sizeof(ai_health_json),
                     "{\"total_inferences\":%u,\"primary_count\":%u,"
                     "\"fallback_count\":%u,\"coldstart_count\":%u,"
                     "\"timeout_count\":%u,\"error_count\":%u,"
                     "\"avg_confidence\":%.4f,\"avg_inference_time_us\":%u,"
-                    "\"last_inference_ts\":%llu}",
+                    "\"last_inference_ts\":%llu,"
+                    "\"ntp_synced\":%s,"
+                    "\"ntp_server\":\"%s\"}",
                     (unsigned int)ai_h->total_inferences,
                     (unsigned int)ai_h->primary_count,
                     (unsigned int)ai_h->fallback_count,
@@ -1731,7 +1733,9 @@ print_stats:
                     (unsigned int)ai_h->error_count,
                     (double)ai_h->avg_confidence,
                     (unsigned int)ai_h->avg_inference_time_us,
-                    (unsigned long long)ai_h->last_inference_timestamp_us);
+                    (unsigned long long)ai_h->last_inference_timestamp_us,
+                    time_sync_is_synchronized() ? "true" : "false",
+                    "192.168.2.1");
                 if (len > 0 && (size_t)len < sizeof(ai_health_json)) {
                     char topic[64];
                     snprintf(topic, sizeof(topic), "edgevib/%u/health/ai",
