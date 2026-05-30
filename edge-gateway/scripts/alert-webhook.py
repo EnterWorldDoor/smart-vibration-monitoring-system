@@ -77,7 +77,7 @@ def main():
     args = parser.parse_args()
 
     # Connect MQTT
-    mqtt_client = mqtt.Client(client_id="edgevib-alert-webhook")
+    mqtt_client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id="edgevib-alert-webhook")
     mqtt_client.connect(args.mqtt_broker, args.mqtt_port, keepalive=60)
     mqtt_client.loop_start()
     print(f"[mqtt] Connected to {args.mqtt_broker}:{args.mqtt_port}")

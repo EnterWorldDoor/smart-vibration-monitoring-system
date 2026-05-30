@@ -192,7 +192,7 @@ services:
     mem_limit: 15m
 
   cadvisor:
-    image: google/cadvisor:latest
+    image: gcr.io/cadvisor/cadvisor:latest
     container_name: edgevib-cadvisor
     volumes:
       - /:/rootfs:ro
