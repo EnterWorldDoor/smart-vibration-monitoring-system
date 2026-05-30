@@ -101,12 +101,13 @@ func (h *ExportHandler) ExportCSV(w http.ResponseWriter, r *http.Request) {
 
 	writer := csv.NewWriter(w)
 
-	// Header
+	// Header — legacy CSV format, aligned with edge-ai training_data.csv
 	header := []string{
-		"time", "site_id", "device_type", "device_id",
+		"timestamp_ms", "dev_id",
 		"rms_x", "rms_y", "rms_z", "overall_rms",
 		"peak_freq", "peak_amp",
 		"temperature_c", "humidity_rh",
+		"label",
 	}
 	if err := writer.Write(header); err != nil {
 		return
@@ -115,9 +116,7 @@ func (h *ExportHandler) ExportCSV(w http.ResponseWriter, r *http.Request) {
 	// Data rows
 	for _, row := range rows {
 		record := []string{
-			row.Time.Format(time.RFC3339Nano),
-			row.SiteID,
-			row.DeviceType,
+			strconv.FormatInt(row.Time.UnixMilli(), 10),
 			row.DeviceID,
 			floatOrEmpty(row.RMSX),
 			floatOrEmpty(row.RMSY),
@@ -127,6 +126,7 @@ func (h *ExportHandler) ExportCSV(w http.ResponseWriter, r *http.Request) {
 			floatOrEmpty(row.PeakAmp),
 			floatOrEmpty(row.TemperatureC),
 			floatOrEmpty(row.HumidityRH),
+			"unknown",
 		}
 		if err := writer.Write(record); err != nil {
 			return

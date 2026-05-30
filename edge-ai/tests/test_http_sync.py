@@ -12,9 +12,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from data_collection.http_sync import HttpDataSyncer, SyncError
 
 
-CSV_HEADER = "time,site_id,device_type,device_id,rms_x,rms_y,rms_z,overall_rms,peak_freq,peak_amp,temperature_c,humidity_rh\n"
-CSV_ROW1 = "2026-05-01T00:00:00Z,factory1,motor,de01,0.1,0.2,0.3,0.4,120.0,0.05,25.0,50.0\n"
-CSV_ROW2 = "2026-05-01T00:00:02Z,factory1,motor,de01,0.11,0.21,0.31,0.41,121.0,0.06,25.1,50.1\n"
+CSV_HEADER = "timestamp_ms,dev_id,rms_x,rms_y,rms_z,overall_rms,peak_freq,peak_amp,temperature_c,humidity_rh,label\n"
+CSV_ROW1 = "1714564800000,de01,0.1,0.2,0.3,0.4,120.0,0.05,25.0,50.0,unknown\n"
+CSV_ROW2 = "1714564802000,de01,0.11,0.21,0.31,0.41,121.0,0.06,25.1,50.1,unknown\n"
 
 
 class MockResponse:
@@ -70,7 +70,7 @@ def test_sync_success_first_time(tmpdir):
     assert os.path.exists(cursor_file)
     with open(output_path) as f:
         content = f.read()
-        assert "time,site_id" in content
+        assert "timestamp_ms,dev_id" in content
         assert "de01" in content
 
 

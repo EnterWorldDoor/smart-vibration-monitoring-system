@@ -1732,13 +1732,139 @@ ESP32-S3:
 
 ---
 
-### P2: System Monitoring（全栈监控）
+### P2: System Monitoring（基础设施监控）
 
 **问题**: 10 个服务运行在 Orange Pi 4GB 内存约束下，没有统一的 metrics 采集和告警。
 
-**目标**: Prometheus + Node Exporter 采集宿主机+容器指标，Grafana 统一告警。
+**目标**: Prometheus + Node Exporter 采集宿主机 + 容器资源指标，Grafana 统一告警。
 
-**预估内存**: ~50MB (Prometheus + Node Exporter)。主要是配置工作，架构讨论空间有限。
+**预估内存**: ~80MB (Prometheus ~50MB + Node Exporter ~10MB + cAdvisor ~20MB)。
+
+#### 决策 1: 监控范围 — 基础设施层 vs 应用层 (2026-05-30)
+
+**选择**: Phase 1 只做**基础设施层**监控（CPU/内存/磁盘/网络/容器资源），应用层健康（服务心跳/错误计数/推理延迟）延后。
+
+**Why**:
+- 应用层已有 MQTT `status/health` topic 周期性上报（data-aggregator: 30s, inference-engine: 30s, llm-analyzer: 30s, vision-service: 30s），Grafana 设备状态面板已消费这些 MQTT 消息
+- 应用层监控需要定义统一 metrics schema（service_name, metric_name, labels, value），这涉及跨 10 个服务的代码改动，不是纯配置工作
+- 先解决最紧迫的——Orange Pi 4GB 内存 OOM 风险、磁盘爆满、CPU 过热——这些是基础设施告警，不需要改应用代码
+
+**监控分层**:
+| 层 | 采集器 | 监控对象 | Phase |
+|----|--------|---------|-------|
+| 宿主机 | Node Exporter | CPU/内存/磁盘/网络/温度/系统负载 | **P2 (本次)** |
+| 容器 | cAdvisor | 每个 Docker 容器的 CPU/内存/IO/网络 | **P2 (本次)** |
+| 应用 | 未来统一 metrics SDK | 服务心跳/推理延迟/错误率/MQTT 消息速率 | P4 (后续) |
+
+**Alternatives considered**:
+- 应用层一并做: 跨 10 个服务改代码，范围过大。且 Prometheus 内存开销随 time-series 数量线性增长，应用 metrics 一上 Prometheus 内存可能从 50MB 涨到 150MB+，在 4GB 约束下需要先观察基础设施基线再做
+
+#### 决策 2: 部署方式 — 全 Docker Compose 统一编排 (2026-05-30)
+
+**选择**: Prometheus + Node Exporter + cAdvisor 全部 Docker 部署，加入 `docker/docker-compose.yml`
+
+**Why**:
+- 三个组件都不需要硬件设备节点（与 systemd 的硬件直通分界线一致）。Node Exporter 只需 `-v /:/host:ro` bind mount 读宿主机 `/proc`/`/sys`，cAdvisor 只需 `-v /var/run/docker.sock:/var/run/docker.sock`
+- Docker 统一编排方便一键启停、日志采集走 `docker logs`、内存限制 `--memory` 防 OOM
+- Prometheus 数据目录通过 Docker volume 持久化，与 TimescaleDB/Grafana/Mosquitto 数据管理一致
+- 腾讯云 Docker 镜像加速已有配置，无需额外拉取源
+
+**Alternatives considered**:
+- 混搭 (Prometheus Docker + Node Exporter systemd): Node Exporter 裸机安装可减少一层 bind mount，但增加一个 systemd unit 的运维负担。bind mount `/:/host:ro` 在 Docker 中已足够获取宿主机指标
+- 全 systemd: 与现有 Docker 服务管理方式割裂，且 cAdvisor 是 Go 二进制直接监控 Docker daemon，systemd 部署无优势
+
+#### 决策 3: 数据保留 & 内存预算 (2026-05-30)
+
+**选择**: Prometheus TSDB 7 天保留，P2 新增内存上限 80MB，全量 headroom 从 ~1000MB 降至 ~920MB
+
+**Why**:
+- Orange Pi 4GB 总内存，P2 后 15 个组件合计 ~3080MB，剩余 headroom ~920MB，安全
+- 7 天保留对 Prometheus TSDB 足够——超过一周的趋势分析走 Grafana 查 TimescaleDB（已有 30 天+历史数据），Prometheus 只做短期告警
+- SD 卡 32GB，Prometheus 7 天数据约 ~100-150MB 磁盘占用，不构成约束
+
+**Docker memory limit**: Prometheus `--memory=80m`（含 TSDB head block），cAdvisor `--memory=30m`，Node Exporter `--memory=15m`
+
+**Alternatives considered**:
+- 15 天保留 (Prometheus 默认): 磁盘 ~200-300MB 可接受但 TSDB head block 随 active series 增长，3000 series × 15d 可能 80-100MB 内存，在 4GB 约束下偏激进
+
+#### 决策 4: 采集频率 & Phase 1 告警规则 (2026-05-30)
+
+**选择**: 30s scrape interval + 7 条告警规则
+
+**Why 30s**: 工业场景基础设施告警（OOM/磁盘满/CPU 过热）不需要 15s 级响应。30s 间隔将 TSDB head block 内存从 ~50MB 降至 ~30MB。Prometheus evaluation_interval 同样 30s，与 scrape interval 对齐。
+
+**Phase 1 告警规则**:
+
+| 规则 | PromQL 条件 | 级别 | 说明 |
+|------|------------|------|------|
+| 内存 > 85% | `node_memory_MemAvailable / node_memory_MemTotal < 0.15` | Warning | 4GB 中 < 600MB 空闲 |
+| 内存 > 95% | 同上 `< 0.05` | Critical | OOM 前最后警告 |
+| 磁盘 > 80% | `node_filesystem_avail / node_filesystem_size < 0.20` | Warning | SD 卡 32GB，< 6.4GB 空闲 |
+| 磁盘 > 90% | 同上 `< 0.10` | Critical | |
+| CPU 温度 > 80°C | `node_thermal_zone_temp` | Warning | A733 Tj=105°C，主动散热前预警 |
+| 容器 OOM | `increase(container_oom_events_total[5m]) > 0` | Critical | Docker OOM killer 触发 |
+| Prometheus 自身 | `up{job="prometheus"} == 0` | Critical | 监控系统自身存活 |
+
+**不做 CPU 使用率告警**: A733 2×A76 + 6×A55，llama.cpp 推理时短期 spike 到 100% 是预期行为。持续高负载用 load average 趋势替代阈值告警。
+
+**Alternatives considered**:
+- 15s scrape: 告警延迟更低但 TSDB head block 多占 ~20MB 内存，在 4GB 约束下不划算
+
+#### 决策 5: 告警通知通道 — 双通道 (2026-05-30)
+
+**选择**: Grafana Dashboard 展示 + MQTT 推送，双通道并行。不做邮件/短信（无外部通道配置）
+
+**Why**:
+- **Grafana Dashboard 展示**: 主视觉通知通道，Prometheus alert rules 直接在 Grafana 面板显示 Warning/Critical 状态，零额外组件
+- **MQTT 推送**: Prometheus Alertmanager → webhook → 轻量脚本 → MQTT `EdgeVib/system/monitoring/alert`，api-server WebSocket hub 消费并推送到 Web 前端
+- 双通道给后续自动化留接口：声光报警器（digital_io alarm_service 已预留 GPIO 控制）、LLM 自动生成故障报告
+- MQTT alert payload: `{severity, alert_name, description, value, threshold, timestamp}`
+
+**Alternatives considered**:
+- 纯 Grafana Dashboard: 零改动但告警不进入 MQTT 消息总线，自动化闭环无法消费
+- 邮件/钉钉/企业微信: 需要 Orange Pi 有外网通道 + 配置 SMTP/API token，环境不具备
+
+#### 决策 6: 告警引擎 — Prometheus Alertmanager (2026-05-30)
+
+**选择**: Prometheus Alertmanager（与 Prometheus 同镜像自带），告警规则文件 `config/prometheus.rules.yml` Git 版本控制
+
+**Why**:
+- Alertmanager 与 Prometheus 同镜像内运行，零额外容器进程，~10MB 内存增量
+- 告警规则以 YAML 文件版本控制，code review 可审计，`docker compose restart prometheus` 即生效
+- 支持 silence 窗口（维护时段静音）+ inhibit 规则（如"主机 down 时抑制磁盘告警，避免告警风暴"）
+- Phase 1 不需要 HA 模式 cluster（单节点 Orange Pi）
+
+**Alternatives considered**:
+- Grafana Alerting: 内置已有 Grafana，但告警规则在 UI 中配置不利于 Git 版本管理和 code review，且 inhibit/silence 功能不如 Alertmanager 成熟
+- 独立 Alertmanager 容器: 功能更全面但多一个容器进程（~15MB），在 4GB 约束下无必要
+
+---
+
+### P2 System Monitoring 设计决策汇总
+
+| # | 决策项 | 选择 |
+|---|--------|------|
+| 1 | 监控范围 | 基础设施层（Node Exporter + cAdvisor），应用层延后 P4 |
+| 2 | 部署方式 | 全 Docker Compose 统一编排 |
+| 3 | 数据保留 & 内存 | Prometheus TSDB 7 天，P2 新增 ~90MB，headroom ~910MB |
+| 4 | 采集频率 | 30s scrape + 7 条告警规则 |
+| 5 | 通知通道 | Grafana Dashboard + Alertmanager → MQTT webhook 双通道 |
+| 6 | 告警引擎 | Prometheus Alertmanager（YAML rules，Git 版本控制） |
+
+**源码结构** (P2 纯配置，无新增 Go/Python 代码):
+```
+edge-gateway/
+├── config/
+│   ├── prometheus.yml              — 主配置: scrape targets + alertmanager
+│   └── prometheus.rules.yml        — 7 条告警规则
+├── docker/
+│   ├── docker-compose.yml          — 新增 prometheus, cadvisor, node-exporter 服务
+│   └── alertmanager/
+│       └── config.yml              — Alertmanager: 路由 + MQTT webhook receiver
+├── scripts/
+│   └── alert-webhook.py            — Alertmanager webhook → MQTT 转发 (≤30 行)
+└── CONTEXT.md                      — 本文档
+```
 
 ---
 

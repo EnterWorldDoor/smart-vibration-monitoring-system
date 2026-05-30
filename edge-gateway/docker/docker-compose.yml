@@ -50,6 +50,7 @@ services:
       - edgevib-net
     depends_on:
       - timescaledb
+      - prometheus
 
   # === data-aggregator (Go) ===
   data-aggregator:
@@ -153,6 +154,87 @@ services:
       - mosquitto
       - timescaledb
 
+  # === System Monitoring: Prometheus + Node Exporter + cAdvisor (P2) ===
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: edgevib-prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.retention.time=7d'
+      - '--web.enable-lifecycle'
+    ports:
+      - "9090:9090"
+    volumes:
+      - ../config/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ../config/prometheus.rules.yml:/etc/prometheus/prometheus.rules.yml:ro
+      - prometheus_data:/prometheus
+    restart: unless-stopped
+    networks:
+      - edgevib-net
+    mem_limit: 80m
+    depends_on:
+      - node-exporter
+      - cadvisor
+
+  node-exporter:
+    image: prom/node-exporter:latest
+    container_name: edgevib-node-exporter
+    command:
+      - '--path.rootfs=/host'
+      - '--collector.thermal_zone'
+    volumes:
+      - /:/host:ro
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+    restart: unless-stopped
+    networks:
+      - edgevib-net
+    mem_limit: 15m
+
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:latest
+    container_name: edgevib-cadvisor
+    volumes:
+      - /:/rootfs:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /sys:/sys:ro
+      - /var/lib/docker:/var/lib/docker:ro
+    restart: unless-stopped
+    networks:
+      - edgevib-net
+    mem_limit: 30m
+
+  # === Alertmanager + Webhook Bridge (P2) ===
+  alertmanager:
+    image: prom/alertmanager:latest
+    container_name: edgevib-alertmanager
+    command:
+      - '--config.file=/etc/alertmanager/config.yml'
+      - '--storage.path=/alertmanager'
+    ports:
+      - "9093:9093"
+    volumes:
+      - ./alertmanager/config.yml:/etc/alertmanager/config.yml:ro
+      - alertmanager_data:/alertmanager
+    restart: unless-stopped
+    networks:
+      - edgevib-net
+    mem_limit: 20m
+
+  alert-webhook:
+    build:
+      context: ../scripts
+      dockerfile: Dockerfile.alert-webhook
+    container_name: edgevib-alert-webhook
+    ports:
+      - "8092:8092"
+    restart: unless-stopped
+    networks:
+      - edgevib-net
+    depends_on:
+      - mosquitto
+    mem_limit: 25m
+
 volumes:
   mosquitto_data:
   mosquitto_log:
@@ -160,6 +242,8 @@ volumes:
   grafana_data:
   firmware_data:
   model_data:
+  prometheus_data:
+  alertmanager_data:
 
 networks:
   edgevib-net:
