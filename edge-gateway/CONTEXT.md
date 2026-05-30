@@ -1874,7 +1874,181 @@ edge-gateway/
 
 **目标**: Orange Pi 做局域网 NTP Server，ESP32/STM32/PC 全部时间对齐。
 
-**预估内存**: ~5MB (chrony)。主要是配置工作。
+**预估内存**: ~5MB (chrony systemd 服务)。主要是配置工作。
+
+#### 决策 1: Orange Pi NTP 上游时间源 (2026-05-30)
+
+**选择**: PC (192.168.1.100) 作为 Orange Pi 的唯一 NTP upstream
+
+**Why**:
+- PC 双网卡（WLAN 外网 NTP 已同步 + 以太网 192.168.1.100 直连 Orange Pi），时间天然可靠
+- PC ↔ Orange Pi 是以太网直连，不经过 SSH 隧道、不经过代理链——NTP UDP 123 端口天然可达
+- 不需要改造代理链（SSH 隧道只转发 TCP，NTP 是 UDP），零额外网络配置
+- PC 开机→Windows NTP 自动同步→Orange Pi chrony 立即可用，零人工介入
+- 即使 PC WLAN 断开（校园网故障），PC 本地 CMOS RTC 时钟仍可提供分钟级精度，chrony 的 drift file 机制可容忍上游短期不可达
+
+**Orange Pi chrony 角色**: NTP client + NTP server 双角色
+- **client**: upstream 指向 PC `192.168.1.100`（唯一上游）
+- **server**: 监听所有接口（eth0 + wlan0），为局域网内 ESP32/STM32 提供时间
+
+**网络拓扑对应关系**:
+```
+外网 NTP (pool.ntp.org)
+    ↓ WLAN
+PC (192.168.1.100) ──NTP server──→ Orange Pi (192.168.1.1 eth0)
+                                      ↓ NTP server (wlan0 192.168.2.1)
+                                   ESP32-S3 (WiFi AP 客户端)
+```
+PC 自身是 NTP client（从外网同步）+ NTP server（向 Orange Pi 提供时间）。Orange Pi chrony 是唯一局域网时间权威。
+
+**Alternatives considered**:
+- Orange Pi 通过 SSH 代理同步外网 NTP: SSH 隧道只转发 TCP，NTP 用 UDP 123，需要 socat/iptables 做 UDP→TCP 转换，复杂性远超收益
+- 手动设置时间 + chrony free-run: A733 无电池 RTC，断电时钟归零；晶振漂移累积误差不可控
+- 多个外网 NTP upstream: Orange Pi 无独立外网通道，eth0 gateway 是 PC 不转发
+
+**部署验证 (2026-05-30)**:
+- Orange Pi chrony 4.2 部署成功，PC upstream NTP 同步正常
+- 同步精度: 偏差 -110μs，stratum 4，Reach=17（连续可达）
+- `maxdistance 15.0` 必须: Windows w32time NTP server 默认 root dispersion 5-10s，chrony 默认 `maxdistance 1.0` 会拒绝此源
+- chrony 监听 `0.0.0.0:123`（eth0+wlan0），等待 ESP32 客户端连接
+
+#### 决策 2: ESP32 NTP 目标 (2026-05-30)
+
+**选择**: ESP32 SNTP 客户端指向 Orange Pi chrony — `192.168.2.1:123`（WiFi AP 网关地址）
+
+**Why**:
+- ESP32 通过 WiFi 连接 Orange Pi 热点 `EdgeVib-AP`（子网 192.168.2.0/24），chrony 在 wlan0 接口监听
+- 局域网一跳 UDP 123，零路由、零 NAT、零代理链依赖
+- ESP32 不直接出外网——Orange Pi 外网通道是 SSH 隧道（TCP only），ESP32 无法独立到达外网 NTP
+- `time_sync` 组件已有 fallback：SNTP 不可达时 `time_sync_get_timestamp_us()` 回退到 `esp_timer_get_time()`（boot-relative），系统正常运行。开发模式下 ESP32 连 PC 网络时 SNTP 自然超时，不影响数据采集
+
+**ESP32 config_manager 默认值变更**:
+| 字段 | 旧默认值 | 新默认值 | 说明 |
+|------|---------|---------|------|
+| `sntp_server1` | `pool.ntp.org` | `192.168.2.1` | Orange Pi chrony |
+| `sntp_server2` | `time.google.com` | 空字符串（禁用） | 局域网单上游，不依赖外网 |
+
+**Why 单上游**: 局域网只有一个 chrony 实例。ESP32 `time_sync` 组件支持最多 4 个 NTP 服务器，但多服务器设计是为外网容灾——同一局域网内配置多个 chrony 实例没有意义。chrony 自身不可达 = Orange Pi 挂了 = 整个系统离线，ESP32 时间戳退化为 boot-relative 不影响安全性。
+
+**Alternatives considered**:
+- ESP32 继续指向外网 NTP (pool.ntp.org): Orange Pi 外网走 SSH TCP 隧道，UDP 123 不通；即使配 IP forwarding，校园网限制单设备登录使 ESP32 无法直接出网
+
+#### 决策 3: STM32（F407 + F103）时间同步范围 (2026-05-30)
+
+**选择**: Phase 1 (P3) 不做 STM32 时间同步，只覆盖 Orange Pi + ESP32
+
+**Why**:
+- P3 核心目标是"保证 TimescaleDB 时序数据时间戳一致性"，ESP32 + Orange Pi 时间对齐已达成——数据经 ESP32 打时戳后入 TimescaleDB，STM32 无时间不影响数据完整性
+- STM32F407/F103 在 ESP32 上游——它们的数据由 ESP32 在 MQTT 发布时提供时间戳，不依赖 STM32 本地时钟
+- F407 TFT LCD 显示设备状态（安全状态/健康等级/运行模式），不是时钟应用，显示 uptime 足够
+- 新增 UART4 时间下发协议命令（ESP32→F407）增加约 50 行协议代码，Phase 1 不做
+- STM32 时间同步延后到 P4（应用层监控），届时统一评估是否需要新增 `CMD_TIME_SYNC`
+
+**Alternatives considered**:
+- 新增 UART4 CMD 0x19（时间广播）: ESP32 每 60s 向 F407 下发 Unix 时间，F407 再通过 CAN 转发给 F103。功能完整但为 LCD 时钟显示引入协议变更，性价比低，延后
+
+#### 决策 5: ESP32 MQTT `timestamp_ms` 保持 boot-relative 不变 (2026-05-30)
+
+**选择**: ESP32 MQTT JSON 中 `timestamp_ms` 继续使用 `esp_timer_get_time()` 的 boot-relative 值，不切换为 Unix epoch
+
+**Why**:
+- data-aggregator 去重依赖 `(device_id, timestamp_ms, source_path)` 三元组精确匹配，`timestamp_ms` 的单调性至关重要
+- ESP32 SNTP 同步丢失时（Orange Pi 宕机/WiFi 断开），`time_sync` 组件 fallback 到 `esp_timer_get_time()`——如果 MQTT 中已切换为 Unix epoch，数值会从 ~1.7e12 跳变到 ~2e6，去重行为不确定
+- TimescaleDB 的正确时间戳由 data-aggregator 用 Orange Pi 本地时间保证——Orange Pi 现在有 chrony（决策 1+4），写入 `sensor_data.time` 分区键的时间是准的
+- ESP32 JSONB payload 中 `timestamp_ms` 的语义是"数据产生时刻相对于本设备启动的时间"，用于去重和溯源；绝对时间由 Orange Pi 侧记录
+
+**ESP32 获得 NTP 同步后的实际使用**:
+- 自身日志系统输出人类可读时间戳
+- MQTT `status/health` topic 上报 `ntp_synced: true/false` 和 `unix_time` 字段
+- 定时任务调度（如 OTA 固件每小时轮询）
+- MQTT 数据 payload 格式不变，与 data-aggregator 零耦合
+
+**Alternatives considered**:
+- 新增独立字段 `unix_timestamp_ms`: 与 `timestamp_ms` 并存，JSON payload 增大 13 字节（字段名 + 值），但下游无消费者需要，不是现在加的理由
+
+#### 决策 6: NTP 时间同步状态监控 (2026-05-30)
+
+**选择**: ESP32 MQTT health heartbeat 上报 `ntp_synced` 字段 + chrony 进程存活由 P2 Node Exporter systemd collector 覆盖
+
+**Why**:
+- ESP32 `time_sync` 组件已有完整同步状态管理（`SYNC_STATUS_SYNCED/FAILED`），在 `status/health` MQTT 消息中加一个 bool 字段 ~5 行代码
+- Grafana 设备状态面板直接读取 `ntp_synced` 展示——ESP32 时间未同步时显示黄色警告
+- chrony 进程存活由 P2 Node Exporter 的 `--collector.systemd` 自动采集 `node_systemd_unit_state{name="chrony.service"}`，不需要额外 exporter
+- 不新增 Prometheus 告警规则——P3 只做配置工作，告警规则延后到 P4（应用层监控统一做）
+
+**ESP32 health JSON 变更**:
+```json
+{
+  "device_id": "esp32-01",
+  "uptime_s": 3600,
+  "ntp_synced": true,        // 新增: time_sync_is_synchronized()
+  "ntp_server": "192.168.2.1" // 新增: 当前连接的 NTP 服务器
+}
+```
+
+**Alternatives considered**:
+- 安装 chrony Prometheus exporter: 增加一个 Python/Go 进程（~5MB 内存），P3 是配置工作不引入新二进制
+- 零监控: 时间同步是数据一致性的基础，不监控会导致"Orange Pi 时钟漂移了几小时才发现"的运维事故
+
+---
+
+### P3 NTP Server 设计决策汇总
+
+| # | 决策项 | 选择 |
+|---|--------|------|
+| 1 | Orange Pi NTP 上游 | PC (192.168.1.100) — 以太网直连，零代理链依赖 |
+| 2 | ESP32 NTP 目标 | Orange Pi chrony (192.168.2.1) — WiFi AP 网关一跳 |
+| 3 | STM32 时间同步 | Phase 1 不做 — 不影响 TimescaleDB 数据一致性 |
+| 4 | chrony 配置 + PC NTP Server | `server 192.168.1.100 iburst` + `allow 192.168.2.0/24` + PC w32time |
+| 5 | ESP32 MQTT timestamp_ms | 保持 boot-relative 不变 — 去重兼容 |
+| 6 | 监控 | ESP32 health heartbeat `ntp_synced` + Node Exporter systemd collector |
+
+### P3 实施清单
+
+**Orange Pi 侧（1 个新增文件 + 1 个脚本追加）**:
+
+| 文件 | 操作 | 用途 |
+|------|------|------|
+| `config/chrony.conf` | **新增** | chrony 配置（upstream PC + allow LAN） |
+| `scripts/setup-ubuntu.sh` | **追加** | `apt install chrony` + 拷贝配置 + enable 服务 |
+
+**ESP32 侧（2 个文件修改）**:
+
+| 文件 | 操作 | 用途 |
+|------|------|------|
+| `components/config_manager/config_manager.c` | **修改** | `sntp_server1` 默认值 `"pool.ntp.org"` → `"192.168.2.1"` |
+| `main/esp32-gateway.c` | **修改** | health heartbeat 加 `ntp_synced` + `ntp_server` 字段 |
+
+**PC 侧（1 个新增脚本）**:
+
+| 文件 | 操作 | 用途 |
+|------|------|------|
+| `scripts/setup-win-ntp.ps1` | **新增** | 启用 Windows w32time NTP Server |
+
+**不需要改动的服务**: data-aggregator, inference-engine, llm-analyzer, vision-service, audio-monitor, api-server, ota-server, model-deploy, opcua-server, rs232-gateway — 它们使用 Orange Pi `datetime.now(UTC)`，chrony 安装后全系统时间自动生效。
+
+**部署验证**:
+```bash
+# Orange Pi
+chronyc sources | grep 192.168.1.100    # PC upstream 可达
+chronyc clients                          # ESP32 已连接
+# ESP32 串口
+grep "SNTP synchronized"                 # 同步成功日志
+# MQTT
+mosquitto_sub -t "EdgeVib/+/gateway/+/status/health" | jq .ntp_synced  # true
+```
+
+**完整时间同步链路**:
+```
+外网 NTP (pool.ntp.org)
+    ↓ WLAN
+PC w32time (192.168.1.100) ──NTP──→ Orange Pi chrony (192.168.1.1 eth0)
+                                        ├── NTP server (wlan0 192.168.2.1)
+                                        │       ↓ SNTP
+                                        └──── ESP32-S3 (time_sync)
+                                               ├── ntp_synced=true (MQTT health)
+                                               └── timestamp_ms 保持 boot-relative (MQTT data)
+```
 
 ---
 
