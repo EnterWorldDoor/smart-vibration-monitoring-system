@@ -133,8 +133,8 @@ static const struct system_config DEFAULT_CONFIG = {
 
     /* 时间同步配置 */
     .timezone               = "CST-8",
-    .sntp_server1          = "pool.ntp.org",
-    .sntp_server2          = "time.google.com",
+    .sntp_server1          = "192.168.2.1",      /* Orange Pi chrony (WiFi AP 网关) */
+    .sntp_server2          = "",                  /* 局域网单上游, 不依赖外网 */
     .sntp_sync_timeout_ms  = 10000,
     .sntp_retry_interval_ms = 5000,
     .sntp_max_retries      = 3,
