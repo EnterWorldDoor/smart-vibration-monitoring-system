@@ -1,0 +1,13 @@
+# EdgeVib Virtual CAN — edgevib-can-d service config
+# Reads CAN raw frames from MQTT and injects into SocketCAN interface
+
+mqtt:
+  broker_url: "tcp://localhost:1883"
+  client_id: "edgevib-can-d"
+  qos: 1
+  topic_pattern: "EdgeVib/+/can/+/raw"
+
+can_interface: "vcan_edgevib"
+health_interval_sec: 30
+health_topic: "EdgeVib/system/health/vcan_edgevib"
+log_level: "info"

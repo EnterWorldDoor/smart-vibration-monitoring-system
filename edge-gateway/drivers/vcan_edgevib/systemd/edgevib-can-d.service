@@ -1,0 +1,30 @@
+[Unit]
+Description=EdgeVib CAN-to-SocketCAN Daemon (MQTT subscriber -> AF_CAN writer)
+Documentation=https://github.com/EnterWorldDoor/smart-vibration-monitoring-system
+After=network.target mosquitto.service vcan-edgevib-load.service
+Wants=mosquitto.service vcan-edgevib-load.service
+
+[Service]
+Type=simple
+User=orangepi
+Group=orangepi
+WorkingDirectory=/opt/edge-gateway
+ExecStartPre=/bin/sh -c 'until ip link show vcan_edgevib >/dev/null 2>&1; do sleep 1; done'
+ExecStart=/usr/local/bin/edgevib-can-d -config /opt/edge-gateway/config/vcan-edgevib.yaml
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=edgevib-can-d
+
+# Security hardening
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+ProtectHome=yes
+ReadOnlyPaths=/opt/edge-gateway/config
+MemoryMax=50M
+LimitNOFILE=1024
+
+[Install]
+WantedBy=multi-user.target

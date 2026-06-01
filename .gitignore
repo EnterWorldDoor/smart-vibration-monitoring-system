@@ -67,6 +67,9 @@ Thumbs.db
 # CONTEXT.md (domain context docs, not for commit)
 CONTEXT.md
 
+# KERNEL-LESSONS.md (kernel build notes, not for commit)
+KERNEL-LESSONS.md
+
 # 其他
 .cproject
 .mxproject
@@ -75,3 +78,4 @@ CONTEXT.md
 lvgl/
 LWIP/
 Drivers/
+!edge-gateway/drivers/

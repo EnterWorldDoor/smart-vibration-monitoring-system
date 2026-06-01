@@ -1,0 +1,15 @@
+[Unit]
+Description=EdgeVib Virtual CAN Kernel Module Loader
+Documentation=https://github.com/EnterWorldDoor/smart-vibration-monitoring-system
+Before=network.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/modprobe vcan_edgevib
+ExecStop=/usr/sbin/modprobe -r vcan_edgevib
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
