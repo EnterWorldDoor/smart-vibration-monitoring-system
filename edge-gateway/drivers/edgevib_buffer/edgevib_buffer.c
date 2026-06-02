@@ -129,12 +129,6 @@ ATTRIBUTE_GROUPS(edgevib_buffer);
 
 /* ---- Stats ---- */
 
-static u32 ring_read_u32(const u8 *sector, u32 offset)
-{
-	return sector[offset] | (sector[offset+1] << 8) |
-	       (sector[offset+2] << 16) | (sector[offset+3] << 24);
-}
-
 static void ring_write_u32(u8 *sector, u32 offset, u32 val)
 {
 	sector[offset]   = val & 0xFF;
@@ -159,9 +153,7 @@ static blk_status_t edgevib_queue_rq(struct blk_mq_hw_ctx *hctx,
 	struct req_iterator iter;
 	sector_t sector;
 	u32 sector_idx;
-	u32 sector_off_hdr;  /* offset within the 4KB sector */
 	unsigned long flags;
-	int i;
 
 	if (!bdev || !bdev->ring_buffer) {
 		blk_mq_end_request(rq, BLK_STS_IOERR);
@@ -343,7 +335,7 @@ static int __init edgevib_buffer_init(void)
 	set_capacity(bdev->disk, bdev->total_sectors);
 
 	/* Attach custom sysfs attributes */
-	bdev->disk->dev.groups = edgevib_buffer_groups;
+	disk_to_dev(bdev->disk)->groups = edgevib_buffer_groups;
 
 	/* Register the block device */
 	ret = device_add_disk(NULL, bdev->disk, NULL);
