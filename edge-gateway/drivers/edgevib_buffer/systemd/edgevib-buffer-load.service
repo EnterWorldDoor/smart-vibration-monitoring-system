@@ -1,0 +1,15 @@
+[Unit]
+Description=EdgeVib RAM Buffer Block Device Loader
+After=network.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/modprobe edgevib_buffer ring_size_mb=1
+ExecStartPost=/bin/chmod 666 /dev/edgevib-buffer
+ExecStop=/usr/sbin/modprobe -r edgevib_buffer
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
