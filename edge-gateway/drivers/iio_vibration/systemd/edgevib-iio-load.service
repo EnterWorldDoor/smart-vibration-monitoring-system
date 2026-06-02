@@ -1,0 +1,14 @@
+[Unit]
+Description=EdgeVib IIO Vibration Kernel Module Loader
+Before=network.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/modprobe edgevib_iio
+ExecStop=/usr/sbin/modprobe -r edgevib_iio
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
