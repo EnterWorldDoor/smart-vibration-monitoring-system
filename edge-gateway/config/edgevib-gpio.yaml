@@ -1,0 +1,39 @@
+# EdgeVib Digital I/O — GPIO Daemon Configuration
+#
+# Controls a virtual GPIO chip (gpio_chip + irq_chip kernel module) for
+# gateway-level health signaling and emergency input detection.
+#
+# The daemon subscribes to MQTT alert/health topics, evaluates system
+# health, and controls GPIO output lines via gpioset subprocess.
+# Input IRQ events (estop, psu_fail) are detected via gpiomon subprocess
+# and published to MQTT emergency topics.
+
+gpio:
+  chip_path: "/dev/gpiochip2"
+  lines:
+    system_ok: 0
+    gateway_alert: 1
+    heartbeat: 2
+    reserved: 3
+    estop_master: 4
+    psu_fail_in: 5
+  heartbeat_interval_ms: 500
+
+mqtt:
+  broker: "localhost"
+  port: 1883
+  client_id: "edgevib-gpio-d"
+  subscribe_topics:
+    - "EdgeVib/system/monitoring/alert"          # Prometheus Alertmanager → alert-webhook.py
+    - "EdgeVib/+/inference/+/ai/report"           # inference-engine WARNING/CRITICAL
+    - "EdgeVib/+/gateway/+/status/health"         # ESP32 device online status
+  publish_estop_topic: "EdgeVib/system/emergency/estop"
+  publish_psu_topic: "EdgeVib/system/emergency/psu_fail"
+
+health:
+  interval_s: 30
+  topic: "EdgeVib/system/health/edgevib-gpio-d"
+  service_timeout_s: 120    # Heartbeat timeout: device considered offline after 120s
+
+logging:
+  level: "info"

@@ -1,0 +1,27 @@
+[Unit]
+Description=EdgeVib IIO Vibration Daemon (TimescaleDB -> /dev/edgevib-iio-inject)
+After=network.target timescaledb.service edgevib-iio-load.service
+Wants=timescaledb.service edgevib-iio-load.service
+
+[Service]
+Type=simple
+User=orangepi
+Group=orangepi
+WorkingDirectory=/opt/edge-gateway
+ExecStartPre=/bin/sh -c 'until [ -c /dev/edgevib-iio-inject ]; do sleep 1; done'
+ExecStart=/usr/local/bin/edgevib-iio-d -config /opt/edge-gateway/config/iio-vibration.yaml
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=edgevib-iio-d
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+ProtectHome=yes
+ReadOnlyPaths=/opt/edge-gateway/config
+MemoryMax=50M
+LimitNOFILE=1024
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,26 @@
+# EdgeVib IIO Vibration Device — edgevib-iio-d service config
+# Polls TimescaleDB vibration_view every 2s, injects 24-dim feature vectors into IIO
+
+device:
+  mode: "single"                      # "single" or "multi" (Phase 1: single)
+  device_id: "de01"                   # device to poll in single mode
+
+timescaledb:
+  host: "localhost"
+  port: 5432
+  dbname: "edgevib_ts"
+  user: "edgevib"
+  password: "edgevib123"
+  sslmode: "disable"
+  poll_interval_ms: 2000              # 2s poll interval matching ESP32 collection rate
+
+iio:
+  device_name: "edgevib-iio"
+  inject_path: "/dev/edgevib-iio-inject"
+
+health:
+  interval_s: 30
+  topic: "EdgeVib/system/health/iio_vibration"
+
+logging:
+  level: "info"                       # debug | info | warn | error

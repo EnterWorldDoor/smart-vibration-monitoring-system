@@ -1,0 +1,15 @@
+[Unit]
+Description=EdgeVib Digital I/O — Virtual GPIO Controller Loader
+Documentation=https://github.com/edgevib/edge-gateway
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/sbin/modprobe edgevib_gpio
+ExecStartPost=/bin/chmod 666 /dev/gpiochip2
+ExecStop=/sbin/modprobe -r edgevib_gpio
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
