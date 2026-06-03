@@ -1,0 +1,28 @@
+[Unit]
+Description=EdgeVib Digital I/O — GPIO Daemon
+After=network.target mosquitto.service edgevib-gpio-load.service
+Wants=mosquitto.service
+
+[Service]
+Type=simple
+User=orangepi
+Group=orangepi
+SupplementaryGroups=gpio
+WorkingDirectory=/opt/edge-gateway
+ExecStartPre=/bin/sh -c 'until [ -c /dev/gpiochip2 ]; do sleep 1; done'
+ExecStart=/usr/local/bin/edgevib-gpio-d -config /opt/edge-gateway/config/edgevib-gpio.yaml
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=edgevib-gpio-d
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+ProtectHome=yes
+ReadOnlyPaths=/opt/edge-gateway/config
+MemoryMax=40M
+LimitNOFILE=1024
+
+[Install]
+WantedBy=multi-user.target
