@@ -1,0 +1,32 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * rtc-edgevib.dts — Device Tree Overlay for EdgeVib Software RTC
+ *
+ * Creates a platform device with compatible = "edgevib,rtc-edgevib"
+ * that triggers edgevib_rtc.c probe() via the platform bus.
+ *
+ * Compile:
+ *   dtc -@ -I dts -O dtb -o rtc-edgevib.dtbo rtc-edgevib.dts
+ *
+ * Load (configfs):
+ *   sudo mkdir -p /sys/kernel/config/device-tree/overlays/rtc-edgevib
+ *   sudo sh -c 'cat rtc-edgevib.dtbo > /sys/kernel/config/device-tree/overlays/rtc-edgevib/dtbo'
+ *
+ * Load (U-Boot):
+ *   Add "fdtoverlays /boot/overlays/rtc-edgevib.dtbo" to extlinux.conf
+ */
+
+/dts-v1/;
+/plugin/;
+
+/ {
+	fragment@0 {
+		target-path = "/";
+		__overlay__ {
+			rtc_edgevib: rtc-edgevib {
+				compatible = "edgevib,rtc-edgevib";
+				status = "okay";
+			};
+		};
+	};
+};
