@@ -1,0 +1,22 @@
+[Unit]
+Description=EdgeVib Software RTC Kernel Module Loader
+Documentation=https://github.com/EnterWorldDoor/smart-vibration-monitoring-system
+Before=time-set.target
+DefaultDependencies=no
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+; DT overlay via configfs (if CONFIG_OF_OVERLAY=y)
+ExecStartPre=-/usr/sbin/modprobe configfs
+ExecStartPre=-/bin/mkdir -p /sys/kernel/config/device-tree/overlays/rtc-edgevib
+ExecStartPre=-/bin/bash -c 'if [ -d /sys/kernel/config/device-tree/overlays/rtc-edgevib ] && [ -f /boot/overlays/rtc-edgevib.dtbo ]; then cat /boot/overlays/rtc-edgevib.dtbo > /sys/kernel/config/device-tree/overlays/rtc-edgevib/dtbo 2>/dev/null; fi'
+; Load kernel module
+ExecStart=/usr/sbin/modprobe edgevib_rtc
+ExecStartPost=/bin/chmod 666 /dev/rtc1
+ExecStop=/usr/sbin/modprobe -r edgevib_rtc
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=sysinit.target

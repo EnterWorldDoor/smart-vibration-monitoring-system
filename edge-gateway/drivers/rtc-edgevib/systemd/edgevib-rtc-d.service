@@ -1,0 +1,31 @@
+[Unit]
+Description=EdgeVib Software RTC Daemon
+After=network.target mosquitto.service edgevib-rtc-load.service
+Wants=mosquitto.service edgevib-rtc-load.service
+
+[Service]
+Type=simple
+User=orangepi
+AmbientCapabilities=CAP_SYS_TIME
+Group=orangepi
+WorkingDirectory=/opt/edge-gateway
+ExecStartPre=/bin/sh -c 'until [ -c /dev/rtc1 ]; do sleep 1; done'
+ExecStartPre=/bin/mkdir -p /var/lib/edgevib
+ExecStart=/usr/local/bin/edgevib-rtc-d -config /opt/edge-gateway/config/rtc-edgevib.yaml
+Restart=always
+RestartSec=5
+TimeoutStopSec=15
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=edgevib-rtc-d
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/edgevib
+ReadOnlyPaths=/opt/edge-gateway/config
+MemoryMax=40M
+LimitNOFILE=1024
+
+[Install]
+WantedBy=multi-user.target
