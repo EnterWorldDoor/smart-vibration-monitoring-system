@@ -1,0 +1,23 @@
+# EdgeVib D4 Software RTC Daemon Configuration
+#
+# Boot:   reads /var/lib/edgevib/last_time → ioctl(RTC_SET_TIME) to restore RTC
+# Runtime: reads RTC → writes file every save_interval_s
+# Shutdown: SIGTERM → final RTC read → write file
+# Kernel:  auto-set_time every 11 minutes (NTP→RTC sync from kernel RTC subsystem)
+
+rtc:
+  device: "/dev/rtc1"
+  persist_path: "/var/lib/edgevib/last_time"
+  save_interval_s: 30
+
+mqtt:
+  broker: "localhost"
+  port: 1883
+  client_id: "edgevib-rtc-d"
+
+health:
+  interval_s: 30
+  topic: "EdgeVib/system/health/rtc-d"
+
+logging:
+  level: "info"
