@@ -139,9 +139,9 @@ func runMQTTSubscriber(ctx context.Context, brokerURL string, cfg *Config,
 			logger.Info("mqtt connected", "broker", brokerURL, "topics", cfg.MQTT.SubscribeTopics)
 		})
 
-		opts.SetOnConnectionLost(func(c mqtt.Client, err error) {
+		opts.OnConnectionLost = func(c mqtt.Client, err error) {
 			logger.Warn("mqtt connection lost", "err", err)
-		})
+		}
 
 		client := mqtt.NewClient(opts)
 		token := client.Connect()

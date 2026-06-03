@@ -151,7 +151,7 @@ def main():
     # Test 4: GPIO IRQ → MQTT emergency topic
     print("\n--- Test 4: sysfs inject ESTOP IRQ → MQTT emergency topic ---")
     # Find sysfs inject_irq path
-    sysfs_dir = "/sys/devices/virtual/gpiochip/edgevib-gpio"
+    sysfs_dir = "/sys/devices/virtual/edgevib-gpio/edgevib-gpio"
     if not os.path.exists(sysfs_dir):
         # Fallback: search
         result = subprocess.run(

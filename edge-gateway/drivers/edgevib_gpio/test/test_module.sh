@@ -71,7 +71,7 @@ fi
 # Test 4: inject_irq falling edge + gpiomon
 echo ""
 echo "--- Test 4: inject_irq falling edge ---"
-SYSFS_DIR="/sys/devices/virtual/gpiochip/${CHIP}"
+SYSFS_DIR="/sys/devices/virtual/edgevib-gpio/edgevib-gpio"
 if [ ! -f "${SYSFS_DIR}/inject_irq" ]; then
     # Fallback: find the sysfs path via gpiochip device
     SYSFS_DIR=$(find /sys/devices -name "$CHIP" -type d 2>/dev/null | head -1)
