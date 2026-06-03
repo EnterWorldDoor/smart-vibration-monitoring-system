@@ -1,0 +1,29 @@
+# EdgeVib HWMON Motor Health Daemon Configuration
+# Polls TimescaleDB for motor electrical parameters, injects into kernel hwmon subsystem
+
+hwmon:
+  inject_path: "/dev/edgevib-hwmon-inject"
+  num_motors: 4
+  motor_devices:                # device_id -> motor index (0..N-1), maps to hwmonN
+    - "motor-01"
+    - "motor-02"
+    - "motor-03"
+    - "motor-04"
+
+timescaledb:
+  host: "localhost"
+  port: 5432
+  dbname: "edgevib_ts"
+  user: "edgevib"
+  password: "edgevib123"
+  sslmode: "disable"
+  poll_interval_ms: 2000        # 2s poll interval (matches ESP32 2s data rate)
+
+health:
+  interval_s: 30
+  topic: "EdgeVib/system/health/hwmon_motor"
+  broker: "localhost"
+  port: 1883
+
+logging:
+  level: "info"                 # debug | info | warn | error

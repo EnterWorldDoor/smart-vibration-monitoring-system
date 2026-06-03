@@ -1,0 +1,15 @@
+[Unit]
+Description=EdgeVib HWMON Motor Health — Kernel Module Loader
+Before=network.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/sbin/modprobe edgevib_hwmon num_motors=4
+ExecStartPost=/bin/chmod 666 /dev/edgevib-hwmon-inject
+ExecStop=/sbin/modprobe -r edgevib_hwmon
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
