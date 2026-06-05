@@ -1,0 +1,15 @@
+[Unit]
+Description=EdgeVib E-Stop Input Device — Kernel Module Loader
+Before=network.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/sbin/modprobe edgevib_input
+ExecStartPost=/bin/chmod 666 /dev/edgevib-input-inject
+ExecStop=/sbin/modprobe -r edgevib_input
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,27 @@
+[Unit]
+Description=EdgeVib E-Stop Input Device — Daemon
+After=network.target mosquitto.service edgevib-input-load.service
+Wants=mosquitto.service edgevib-input-load.service
+
+[Service]
+Type=simple
+User=orangepi
+Group=orangepi
+WorkingDirectory=/opt/edge-gateway
+ExecStartPre=/bin/sh -c 'until [ -c /dev/edgevib-input-inject ]; do sleep 1; done'
+ExecStart=/usr/local/bin/edgevib-input-stop-d -config /opt/edge-gateway/config/edgevib-input.yaml
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=edgevib-input-stop-d
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+ProtectHome=yes
+ReadOnlyPaths=/opt/edge-gateway/config
+MemoryMax=50M
+LimitNOFILE=1024
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,31 @@
+# EdgeVib E-Stop Input Device — Configuration
+#
+# The daemon subscribes to MQTT for F407 emergency stop state
+# (via rs232-gateway backup channel) and injects key events
+# to the edgevib_input kernel module via /dev/edgevib-input-inject.
+#
+# Key mapping:
+#   e_stop_state=0 (NORMAL)     → KEY_STOP=0, KEY_WAKEUP=0
+#   e_stop_state=1 (EMERGENCY)  → KEY_STOP=1, KEY_WAKEUP=0
+#   e_stop_state=2 (WAIT_RESET) → KEY_STOP=0, KEY_WAKEUP=1
+
+input:
+  inject_path: "/dev/edgevib-input-inject"
+
+mqtt:
+  broker: "localhost"
+  port: 1883
+  client_id: "edgevib-input-stop-d"
+  subscribe_topics:
+    - "EdgeVib/+/motor/+/status/health"       # CMD 0x07 — periodic full state (1Hz)
+    - "EdgeVib/+/motor/+/status/emergency"     # CMD 0x10 — immediate emergency event
+  fail_safe_timeout_s: 10   # MQTT timeout → KEY_STOP=1 (safety default)
+
+health:
+  interval_s: 30
+  topic: "EdgeVib/system/health/edgevib-input-stop-d"
+  broker: "localhost"
+  port: 1883
+
+logging:
+  level: "info"
