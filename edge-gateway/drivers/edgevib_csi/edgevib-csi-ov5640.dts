@@ -1,0 +1,55 @@
+/dts-v1/;
+/plugin/;
+
+/*
+ * EdgeVib OV5640 MIPI CSI Camera Device Tree Overlay
+ *
+ * Enables an OV5640 MIPI CSI-2 camera sensor on Orange Pi 4 Pro (A733).
+ * The sensor is connected via I2C bus 0 (address 0x3c) and MIPI CSI-2
+ * interface mipi@5810100 (2-lane configuration).
+ *
+ * Usage (requires physical OV5640 camera module):
+ *   dtc -@ -I dts -O dtb -o edgevib-csi-ov5640.dtbo edgevib-csi-ov5640.dts
+ *   sudo dtoverlay edgevib-csi-ov5640.dtbo
+ *   sudo modprobe edgevib_csi_sensor
+ */
+
+&i2c0 {
+	#address-cells = <1>;
+	#size-cells = <0>;
+
+	ov5640: camera-sensor@3c {
+		compatible = "ovti,ov5640";
+		reg = <0x3c>;
+		status = "okay";
+
+		clocks = <&csi_mclk0>;
+		clock-frequency = <24000000>;
+
+		mipi-controller = <&mipi@5810100>;
+
+		reset-gpios = <&pio 4 16 1>;  /* PE16, active low */
+		pwdn-gpios  = <&pio 4 17 0>;  /* PE17, active high */
+
+		port {
+			sensor_out: endpoint {
+				remote-endpoint = <&mipi_in>;
+				data-lanes = <1 2>;
+				link-frequencies = /bits/ 64 <336000000>;
+			};
+		};
+	};
+};
+
+&mipi@5810100 {
+	ports {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		mipi_in: endpoint@0 {
+			reg = <0>;
+			remote-endpoint = <&sensor_out>;
+			data-lanes = <1 2>;
+		};
+	};
+};

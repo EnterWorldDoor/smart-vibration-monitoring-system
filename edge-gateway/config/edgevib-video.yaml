@@ -1,0 +1,33 @@
+# EdgeVib V4L2 Virtual Video Daemon config
+# Location: /opt/edge-gateway/config/edgevib-video.yaml
+
+devices:
+  - site_id: "factory1"
+    device_id: "motor01"
+  - site_id: "factory1"
+    device_id: "motor02"
+
+daemon:
+  poll_interval_s: 2
+  jpeg_quality_fallback: 75
+
+timescaledb:
+  host: "localhost"
+  port: 5432
+  dbname: "edgevib_ts"
+  user: "edgevib"
+  password: "edgevib123"
+  sslmode: "disable"
+
+kernel:
+  inject_path: "/dev/edgevib-video-inject"
+  num_devices: 2
+
+health:
+  interval_s: 30
+  topic: "EdgeVib/system/health/video-d"
+  broker: "localhost"
+  port: 1883
+
+logging:
+  level: "info"
