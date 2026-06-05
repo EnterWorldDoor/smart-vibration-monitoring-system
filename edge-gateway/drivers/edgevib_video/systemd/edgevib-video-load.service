@@ -1,0 +1,15 @@
+[Unit]
+Description=EdgeVib V4L2 Virtual Video — Kernel Module Loader
+Before=network.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/sbin/modprobe edgevib_video num_devices=2
+ExecStartPost=/bin/chmod 666 /dev/edgevib-video-inject
+ExecStop=/sbin/modprobe -r edgevib_video
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,15 @@
+[Unit]
+Description=EdgeVib MIPI CSI OV5640 Sensor — Kernel Module Loader
+Before=network.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStartPre=/sbin/dtoverlay edgevib-csi-ov5640.dtbo
+ExecStart=/sbin/modprobe edgevib_csi_sensor
+ExecStop=/sbin/modprobe -r edgevib_csi_sensor
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

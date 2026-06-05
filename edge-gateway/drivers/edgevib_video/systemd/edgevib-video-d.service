@@ -1,0 +1,27 @@
+[Unit]
+Description=EdgeVib V4L2 Virtual Video — Daemon
+After=network.target timescaledb.service edgevib-video-load.service
+Wants=timescaledb.service edgevib-video-load.service
+
+[Service]
+Type=simple
+User=orangepi
+Group=orangepi
+WorkingDirectory=/opt/edge-gateway
+ExecStartPre=/bin/sh -c 'until [ -c /dev/edgevib-video-inject ]; do sleep 1; done'
+ExecStart=/usr/local/bin/edgevib-video-d -config /opt/edge-gateway/config/edgevib-video.yaml
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=edgevib-video-d
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+ProtectHome=yes
+ReadOnlyPaths=/opt/edge-gateway/config
+MemoryMax=80M
+LimitNOFILE=1024
+
+[Install]
+WantedBy=multi-user.target
