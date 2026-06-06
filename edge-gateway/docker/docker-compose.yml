@@ -68,6 +68,21 @@ services:
       - mosquitto
       - timescaledb
 
+  # === edge-router (Go) — Cross-workshop anomaly broadcast ===
+  edge-router:
+    build:
+      context: ../services/edge-router
+      dockerfile: Dockerfile
+    container_name: edgevib-edge-router
+    volumes:
+      - ../config/edge-router.yaml:/app/config.yaml:ro
+    restart: unless-stopped
+    networks:
+      - edgevib-net
+    depends_on:
+      - mosquitto
+      - timescaledb
+
   # === inference-engine (Python ONNX Runtime) ===
   inference-engine:
     image: edgevib-inference-engine:latest
