@@ -1,0 +1,27 @@
+# edge-router Configuration — Cross-workshop anomaly broadcast router
+# Phase 1: single-machine multi-site simulation on Mosquitto broker
+
+mqtt:
+  broker_url: "tcp://mosquitto:1883"       # Docker service name (edgevib-net)
+  client_id: "edgevib-edge-router"
+  topics:
+    - "EdgeVib/+/inference/+/ai/report"     # Orange Pi inference-engine anomaly alerts
+    - "EdgeVib/+/motor/+/data/sensor"       # ESP32 real-time sensor data (with ai.class_name)
+  qos: 1
+
+database:
+  host: "timescaledb"                      # Docker service name (edgevib-net)
+  port: 5432
+  user: "edgevib"
+  password: "${DB_PASSWORD:-edgevib123}"
+  dbname: "edgevib_ts"
+  sslmode: "disable"
+  pool_max_conns: 5
+
+dedup:
+  window_seconds: 30                       # Alert dedup window (30s TTL)
+
+router:
+  sites:                                    # Phase 1: 2 workshop simulation
+    - "factory1"
+    - "factory2"
