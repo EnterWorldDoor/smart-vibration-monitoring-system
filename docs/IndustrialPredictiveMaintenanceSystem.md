@@ -94,6 +94,9 @@ STM32F103C8T6 ──CAN──→ STM32F407 (DMF407)
 | ESP32-S3 → Orange Pi | MQTT/WiFi | — | 特征数据 + 健康状态 |
 | STM32F407 → Orange Pi | RS232 (UART5) | 115200bps | 备份通道 (OTA + 关键告警) |
 | STM32F407 → Orange Pi | RS485 (USART3) | 115200bps | Modbus RTU (预留) |
+| Orange Pi → 上位机/SCADA | OPC UA | :4840 | 工业协议暴露 (opcua-server) |
+| Orange Pi → 外部客户端 | REST + WebSocket | :8080 | 查询 + 实时事件推送 (api-server) |
+| Orange Pi ↔ Orange Pi | MQTT (跨车间) | — | 告警广播 (edge-router, Phase1 单机模拟) |
 
 ---
 
@@ -115,16 +118,29 @@ STM32F103C8T6 ──CAN──→ STM32F407 (DMF407)
 
 ## 4.2 模型架构
 
-### ESP32-S3: CNN-LSTM 级联 (TFLite Micro)
+### ESP32-S3 设备端: 1D-CNN (TFLite Micro)
 
 ```
-输入: 24维特征向量 × 时间窗口
+输入: 24维特征向量 × 32时间窗口 [32,24]
   ↓
-1D-CNN (3层): 局部模式提取 (冲击、调制)
+1D-CNN: Conv1D(32/64/128) + BatchNorm + Dropout
   ↓
-LSTM (2层): 时序依赖建模 (趋势、渐变)
+MaxPool1D → GlobalAvgPool1D
   ↓
-Dense + Softmax: 异常评分 [0,1] + 故障类别
+Dense(64) + Dropout → Softmax
+  ↓
+4分类: normal / imbalance / misalignment / bearing_fault + 置信度
+```
+
+> **说明**: 早期设计为 CNN-LSTM 级联，但 TFLite Micro / ESP-NN 不支持 hybrid LSTM 算子，实际部署去掉 LSTM，采用纯 1D-CNN（Keras 精度 0.933，<200KB Flash，<80ms）。时序趋势建模上移到网关侧 ONNX 自编码器。
+
+### Orange Pi 网关端: ONNX 自编码器 (趋势/异常)
+
+```
+24维特征 → Encoder(128→64→32→16→latent 8) → Decoder(镜像) → 重构
+  ↓
+重构误差 (MSE) + 分位数阈值(p95) → 无监督异常检测
+  + 趋势分析 + 剩余寿命(RUL) + 电机综合健康评分(0-100)
 ```
 
 ### ISO 10816 规则引擎 (确定性诊断)
@@ -195,35 +211,64 @@ Orange Pi 数据导出 → Edge-AI PC 训练集构建 → Keras/TensorFlow 训�
 
 ## 7.1 已实现
 
+### 设备层 (固件)
+
 | 模块 | 平台 | 状态 |
 |------|------|------|
 | ADXL345 传感器驱动 + FIFO | ESP32-S3, STM32F103 | 完成 |
-| DSP (FFT/RMS/Peak/Kurtosis) | ESP32-S3, STM32F103 | 完成 |
-| 24维特征提取 (定点FFT) | STM32F103 (自写 dsp_fft_q15) | 完成 |
-| CNN-LSTM TFLite 推理 | ESP32-S3 | 完成 |
-| ISO 10816 规则引擎 | ESP32-S3 | 完成 |
-| UART CRC16 协议栈 (10状态解析器) | STM32F407, ESP32-S3 | 完成 |
-| CAN NDE 多帧重组 (CRC8校验) | STM32F407 | 完成 |
-| MQTT 数据上行 | ESP32-S3 | 完成 |
-| 企业级配置管理器 (NVS+CRC32) | ESP32-S3 | 完成 |
-| 系统监控 (CPU/内存/任务) | ESP32-S3 | 完成 |
-| 日志系统 | ESP32-S3, STM32F407 | 完成 |
-| OTA 固件更新 (SHA256) | ESP32-S3 | 完成 |
-| 看门狗心跳守护 (注册制) | STM32F407 | 完成 |
-| ADC1 3通道 DMA (电机I/V/T) | STM32F407 | 完成 |
+| DSP (FFT/RMS/Peak/Kurtosis/8频带) | ESP32-S3, STM32F103 | 完成 |
+| 24维特征提取 (自写定点FFT) | STM32F103 (dsp_fft_q15) | 完成 |
+| 1D-CNN TFLite Micro 推理 (4分类) | ESP32-S3 (esp-tflite-micro + esp-nn) | 完成 |
+| ISO 10816-3 规则引擎兜底 | ESP32-S3 (fault_diagnosis) | 完成 |
+| AI 双后端级联 (本地+远程) | ESP32-S3 | 完成 |
+| 模型 OTA 热更新 (SPIFFS 分区) | ESP32-S3 (model_loader/updater) | 完成 |
+| UART CRC16-MODBUS 协议栈 (含OTA 0x20-0x23) | STM32F407, ESP32-S3 | 完成 |
+| CAN NDE 17帧重组 (CRC8校验) | STM32F407 | 完成 |
+| 电机控制 (PWM/PID/编码器/ADC/故障) | STM32F407 (PD6010D) | 完成 |
 | 12路隔离输入 + 安全状态机 | STM32F407 | 完成 |
 | 4路隔离输出 + 蜂鸣器 + LED 矩阵 | STM32F407 | 完成 |
-| 双通道对比诊断框架 | ESP32-S3 | 完成 |
-| 模型训练管线 (Keras) | Edge-AI PC | 完成 |
+| 双看门狗级联 (IWDG+WWDG) | STM32F407 | 完成 |
+| LVGL GUI + bootloader/OTA | STM32F407 | 完成 |
+| 企业级组件 (config/monitor/log/data) | ESP32-S3 | 完成 |
 
-## 7.2 待实现
+### 边缘网关层 (Orange Pi 4 Pro)
+
+| 模块 | 技术 | 状态 |
+|------|------|------|
+| 基础设施 (Mosquitto/TimescaleDB/Grafana) | Docker | 完成 |
+| data-aggregator (MQTT去重入库) | Go | 完成 |
+| inference-engine (ONNX 趋势/RUL/健康评分) | Python | 完成 |
+| llm-analyzer (Qwen2.5-1.5B 中文报告) | Python/llama.cpp | 完成 |
+| edge-router (跨车间告警广播) | Go | 完成 |
+| api-server (REST + WebSocket + CSV导出) | Go | 完成 |
+| rs232-gateway (串口备份链路) | C/systemd | 完成 |
+| opcua-server (OPC UA :4840) | C/open62541 | 完成 |
+| vision-service (USB摄像头巡检) | Python/OpenCV | 完成 |
+| audio-monitor (声学异常监测) | Python | 完成 |
+| ota-server / model-deploy (OTA分发) | Go | 完成 |
+| Prometheus 全监控栈 + Alertmanager | Docker | 完成 |
+| 内核驱动栈 D1–D7 (CAN/IIO/块/GPIO/RTC/HWMON/input/V4L2) | kernel 6.6 + Go daemon | 完成 |
+
+### 平台层 (Edge-AI PC)
+
+| 模块 | 技术 | 状态 |
+|------|------|------|
+| 数据采集 (MQTT/HTTP 同步) | Python/paho | 完成 |
+| 数据清洗 + 特征工程 | Python/pandas | 完成 |
+| 1D-CNN + 自编码器 + 集成级联 + 规则/统计兜底 | TensorFlow 2.15 | 完成 |
+| TFLite(INT8) / ONNX 量化导出 | Python | 完成 |
+| 模型 OTA 回灌闭环 | — | 完成 |
+
+## 7.2 待实现 / 进行中
 
 | 模块 | 说明 |
 |------|------|
+| audio-monitor 设备端 I2S 采集固件 | 当前在 `feature/audio-monitor` 分支，未合入 |
+| D7 MIPI CSI 真实 OV5640 摄像头 | 驱动模板就绪，待硬件验证 |
 | RS485 Modbus RTU 从站 | F407 ↔ Orange Pi 通过 TP8485 |
-| Ethernet 第三备份通道 (lwIP) | F407 ↔ Orange Pi, OTA大文件传输 |
-| Orange Pi 数据聚合 + Python AI | 趋势分析, 剩余寿命预测 |
-| Web 监控仪表盘 | Vue + Spring Boot (或 Grafana) |
+| Ethernet 第三备份通道 (lwIP) | F407 ↔ Orange Pi, OTA 大文件传输 |
+| edge-router Phase 2 (真实多台 Pi 跨机 bridge) | 当前为单机多站模拟 |
+| inference-engine NPU (3 TOPS) 加速 | 当前 CPU/OpenBLAS |
 
 ---
 
@@ -232,14 +277,18 @@ Orange Pi 数据导出 → Edge-AI PC 训练集构建 → Keras/TensorFlow 训�
 | 指标 | 数值 |
 |------|------|
 | 振动采样率 | 400 Hz (三轴同步) |
-| 特征窗口 | 160 ms (64样本) |
-| 特征向量维度 | 24 (DE/NDE 一致) |
-| AI 推理延迟 (ESP32) | < 50ms |
+| 特征窗口 | 160 ms (64样本) · 推理窗口 32×24 |
+| 特征向量维度 | 24 (DE/NDE 全链路一致) |
+| AI 推理延迟 (ESP32) | < 80ms (1D-CNN) |
+| ESP32 模型体积 | < 200KB Flash / < 35KB RAM |
 | CAN 总线速率 | 500 kbps |
 | CAN 特征帧 CRC | CRC-8-Dallas/Maxim (每帧) |
 | UART 帧 CRC | CRC16-MODBUS |
 | 安全回路响应 (急停→PWM关) | < 100μs (EXTI ISR) |
-| IWDG 看门狗超时 | 3s |
+| 看门狗 | IWDG 3s + WWDG ~300ms 级联 |
 | F407 任务栈 | app_enterprise 8KB, proto_rx 2KB, wdg_daemon 1KB |
-| F103 Flash 使用 | 37.3KB / 64KB (58%) |
-| F103 SRAM 使用 | 3.1KB / 20KB (15.7%) |
+| F103 Flash 使用 | ~35KB / 64KB (55%) |
+| F103 SRAM 使用 | ~3KB / 20KB (15%) |
+| 网关时序库 | TimescaleDB (PG16), 9 张 hypertable |
+| 网关 LLM | Qwen2.5-1.5B Q4_K_M, ~1.5GB 内存, 5–8 tok/s |
+| 目标内核 | 6.6.98-sun60iw2 (全志 A733) |
