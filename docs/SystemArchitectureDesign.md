@@ -13,9 +13,12 @@ EdgeVib：面向工业预测性维护的边缘智能振动监测系统
 构建从 **设备采集 → 边缘AI → 网关 → 数据平台** 的完整工业系统，实现：
 
 - 双通道 (DE+NDE) 振动监测与对比诊断
-- 边缘 AI 实时故障检测 (CNN-LSTM + ISO 10816)
-- 工业级安全联锁 (急停 + 双动作恢复 + 隔离IO)
-- 多协议通信 (CAN / UART CRC16 / MQTT)
+- 边缘 AI 实时故障检测 (ESP32 端 1D-CNN + ISO 10816 规则引擎)
+- 网关二级 AI (ONNX 趋势/RUL + 本地 LLM 中文故障报告)
+- 工业级安全联锁 (急停 + 双动作恢复 + 隔离IO + 双看门狗)
+- 多协议通信 (CAN / UART CRC16 / MQTT / RS232 / OPC UA)
+
+> 边缘网关（Orange Pi 4 Pro）已从早期"MQTT Broker + 数据聚合"演进为完整的工业边缘平台——11 个微服务 + Linux 内核驱动栈 D1–D7。详见 [`EdgeGatewayPlatform.md`](EdgeGatewayPlatform.md)。
 
 ---
 
@@ -28,9 +31,9 @@ EdgeVib：面向工业预测性维护的边缘智能振动监测系统
 | 设备层 (DE端) | ESP32-S3 传感器服务 + DSP + AI推理 | ESP32-S3-DevKitC-1 + ADXL345 |
 | 设备层 (NDE端) | STM32F103 NDE振动采集 + DSP + CAN上行 | STM32F103C8T6 蓝板 + ADXL345 |
 | 设备层 (主控) | STM32F407 电机控制 + CAN主站 + 协议路由 + 隔离IO | DMF407 + PD6010D 驱动板 |
-| 边缘AI层 | ESP32-S3 CNN-LSTM推理 + ISO 10816规则引擎 | ESP32-S3 (同DE端硬件, 不同功能) |
-| 边缘网关层 | Orange Pi 4 Pro MQTT Broker + 数据聚合 + Docker | 全志A733, 4GB, Ubuntu |
-| 平台层 | PC: 数据收集 + 模型训练 + 部署 | x86 GPU服务器 |
+| 边缘AI层 | ESP32-S3 1D-CNN 实时推理 + ISO 10816规则引擎 + 双后端级联 | ESP32-S3 (同DE端硬件) |
+| 边缘网关层 | Orange Pi: 11微服务 (聚合/推理/LLM/视觉/声学/路由) + 内核驱动D1-D7 | 全志A733, 4GB, Ubuntu 22.04, kernel 6.6 |
+| 平台层 | PC: 数据收集 + 模型训练 (TensorFlow) + TFLite/ONNX 部署 | x86 GPU服务器 |
 
 ## 2.2 数据流
 
@@ -184,40 +187,66 @@ ADXL345[NDE] ──SPI──→ STM32F103                ┌─ UART 0x17/0x18 �
 - 8 频带能量分解
 
 #### AI 推理服务 (ai_service)
-- **模型**: CNN-LSTM 级联架构 (TFLite Micro)
-- **输入**: 24 维特征向量 (与 NDE 端格式一致)
-- **输出**: 异常评分 (0.0-1.0) + 故障类别
+- **模型**: 1D-CNN (Conv1D + MaxPool1D + GlobalAvgPool1D + Dense)，通过 esp-tflite-micro + esp-nn 运行
+  - 注：早期设计为 CNN-LSTM 级联，但 TFLite Micro / ESP-NN 不支持 hybrid LSTM 算子，实际部署去掉 LSTM，采用纯 1D-CNN（Keras 精度 0.933）
+- **输入**: 32×24 特征窗口 (24 维特征向量，与 NDE 端格式一致)
+- **输出**: 4 分类 (normal / imbalance / misalignment / bearing_fault) + 置信度
+- **双后端级联**: `ai_backend_local`(本地 TFLite) + `ai_backend_remote`(远程)，primary/fallback 级联
 - **双通道对比**: DE 特征 vs NDE 特征 → 故障源定位 (电机侧/负载侧)
-- **ISO 10816 规则引擎**: 基于振动烈度等级的确定性诊断
+- **ISO 10816-3 规则引擎** (`fault_diagnosis`): 振动烈度分区 Zone A/B/C 阈值 1.4/2.8/7.1 mm/s + 波峰因子/峰度阈值，无 ML 时即时诊断兜底
+- **模型 OTA 热更新**: `model_loader`(SPIFFS models 分区) + `model_updater` + `ota_relay`(向 STM32 转发)，运行时热切换模型，无需重新烧录
 
 #### 通信
 - **MQTT**: `EdgeVib/{device_id}/data/sensor` (特征数据), `EdgeVib/{device_id}/status/health` (健康状态)
 - **UART 协议**: CRC16-MODBUS 二进制帧 → STM32F407
 - **协议帧格式**: `[AA 55] [LEN_H LEN_L] [DEV] [CMD] [SEQ] [DATA...] [CRC_H CRC_L] [0D]`
 
-#### 企业级模块
+#### 企业级模块 (components/ 共 19 个组件)
 - **config_manager**: NVS 存储 + CRC32 校验, 版本迁移, 工厂重置
 - **system_monitor**: CPU/内存/任务栈/WDT 监控, 阈值告警
-- **log_system**: 环形缓冲 + 分级过滤 + 文件存储
-- **ota_update**: SHA256 校验, 同步/异步模式, 断点续传
-- **time_sync**: NTP 时间同步
+- **log_system**: 环形缓冲 + 分级过滤 + 多目标 (UART/SPIFFS/MQTT)
+- **ota_update / ota_relay**: SHA256 校验固件 OTA，ota_relay 向 STM32 转发
+- **model_loader / model_updater**: 模型 SPIFFS 分区读写 + 热更新
+- **time_sync**: NTP 时间同步 (Orange Pi chrony 为上游)
 - **data_manager**: 数据缓存 + 批量上传
+- **temperature_compensation**: 温度补偿
+- **dsp**: FFT (最大 512 点) + RMS/峰度/偏度/波峰因子/8 频带能量/THD
 
 ---
 
 ## 3.4 Orange Pi 4 Pro 边缘网关
 
 ### 硬件平台
-- **SoC**: 全志 A733, 4GB RAM
-- **OS**: Ubuntu
-- **角色**: MQTT Broker + 数据聚合 + 高级 AI + 视觉监测 + Docker 服务
+- **SoC**: 全志 A733 (2×Cortex-A76 + 6×Cortex-A55 @ 2.0GHz + RISC-V E902), NPU 3 TOPS, 4GB LPDDR4x
+- **OS**: Ubuntu 22.04.5 LTS, kernel 6.6.98-sun60iw2 aarch64
+- **角色**: MQTT Broker + 时序存储 + 二级 AI + 视觉/声学监测 + 工业协议 + 内核驱动栈
 
-### 核心功能
-- **Mosquitto MQTT Broker**: 本地消息总线
-- **数据聚合**: ESP32 MQTT → SQLite/InfluxDB
-- **Python AI**: 趋势分析 + 剩余寿命预测 (复杂模型)
-- **Docker**: 容器化服务部署
-- **视觉监测**: MIPI CSI 相机
+### 核心功能 (概要，完整设计见 EdgeGatewayPlatform.md)
+
+#### 基础设施
+- **Mosquitto MQTT Broker**: 服务间事件总线
+- **TimescaleDB (PG16)**: 统一时序库，9 张 hypertable
+- **Grafana**: 7 个预置仪表盘
+- **Prometheus 栈**: node-exporter + cAdvisor + Alertmanager + alert-webhook
+
+#### 微服务集群 (11 个)
+- **data-aggregator** (Go): MQTT 去重入库
+- **inference-engine** (Python/ONNX): 自编码器异常检测 + 趋势 + RUL + 电机健康评分
+- **llm-analyzer** (Python/llama.cpp): Qwen2.5-1.5B 生成中文故障报告
+- **edge-router** (Go): 跨车间告警广播（空间维度对比诊断）
+- **api-server** (Go): REST + WebSocket + CSV 导出
+- **rs232-gateway** (C): RS232 备份链路网关
+- **opcua-server** (C): OPC UA :4840 (SCADA)
+- **vision-service** (Python): USB 摄像头巡检抓拍
+- **audio-monitor** (Python): 声学异常监测
+- **ota-server / model-deploy** (Go): 固件 / AI 模型 OTA 分发
+
+#### Linux 内核驱动栈 (D1–D7, kernel module + Go daemon)
+D1 虚拟 CAN (SocketCAN) · D2 IIO 振动 · D3 RAM 块设备 + 虚拟 GPIO · D4 软件 RTC · D5 HWMON 电机健康 · D6 急停 evdev · D7 V4L2 视频 + MIPI CSI 模板。把工业数据以标准 Linux 子系统暴露给通用工具链。
+
+#### 部署分层
+- **Docker**: 纯软件服务（依赖隔离）
+- **systemd**: 硬件直通服务 (rs232/opcua/vision/audio) + 内核驱动加载
 
 ---
 
@@ -281,9 +310,25 @@ CRC8: CRC-8-Dallas/Maxim (0x31), 覆盖 data[0..6]
 
 ## 4.3 ESP32-S3 → Orange Pi 4 Pro (MQTT)
 
-- Topic: `EdgeVib/{device_id}/data/sensor` (JSON payload)
-- Topic: `EdgeVib/{device_id}/status/health` (JSON payload)
-- Broker: Mosquitto (运行在 Orange Pi)
+### 主题命名规范 (分层)
+```
+EdgeVib/{site_id}/{device_type}/{device_id}/{data_type}
+
+示例:
+  EdgeVib/factory1/motor/de01/data/sensor        — DE端振动数据
+  EdgeVib/factory1/motor/nde01/data/sensor       — NDE端振动数据
+  EdgeVib/factory1/inference/de01/ai/report       — 网关AI报告 (核心扇出主题, 5个服务订阅)
+  EdgeVib/factory1/llm/de01/report                — LLM故障报告
+  EdgeVib/factory2/router/factory1/alert          — 跨车间告警广播
+```
+- Broker: Mosquitto (运行在 Orange Pi), 匿名访问, 持久化启用
+- ESP32 早期扁平格式 `edgevib/#` 与分层格式 `EdgeVib/+/+/+/data/#` 由 data-aggregator 同时兼容；设备 byte ID ↔ 字符串 ID 由 `config/devices.yaml` 映射
+
+---
+
+## 4.4 数据模型 (TimescaleDB)
+
+统一时序库 TimescaleDB (PostgreSQL 16 + 时序扩展)，共 9 张 hypertable：`sensor_data`(原始遥测) · `ai_reports`(AI结果) · `llm_reports`(LLM报告) · `vision_captures` · `audio_features` · `audio_anomalies` · `firmware_versions` · `upgrade_history` · `model_versions`。Schema 见 `edge-gateway/docker/timescaledb/init.sql`，详见 [`EdgeGatewayPlatform.md`](EdgeGatewayPlatform.md) §2.1。
 
 ---
 
@@ -319,13 +364,19 @@ NORMAL ────────────────────────�
 
 ## 5.3 看门狗策略
 - **IWDG**: LSI 40kHz, 3s 超时, 独立时钟
+- **WWDG**: ~300ms 窗口看门狗, 与 IWDG 级联形成工业级双看门狗（快速捕捉任务卡死 + 独立时钟兜底）
 - **wdg_daemon**: osPriorityHigh, 500ms 周期, 注册制 (最多16槽位)
 - **注册项**: app_enterprise(3s/复位), uart4_tx(5s/复位), can_nde(10s/不复位)
-- **WWDG 放弃原因**: 最大超时 ~49ms, 不匹配 FreeRTOS 秒级任务
+- **OTA 支持**: `wdg_disable_for_ota()` / `enable_after_ota()`，固件升级期间安全挂起
 
 ---
 
 # 6. 关键架构决策记录 (ADR)
+
+### ADR: ESP32 端部署 1D-CNN 而非 CNN-LSTM
+- **决策**: 设备端实时分类模型采用纯 1D-CNN (Conv1D + GlobalAvgPool + Dense)，去掉早期设计的 LSTM 时序层
+- **理由**: TFLite Micro / ESP-NN 不支持 hybrid LSTM 算子；纯 CNN 在 32×24 特征窗口上已达 0.933 精度且可完全量化，满足 <80ms / <200KB 约束
+- **补偿**: 时序趋势建模上移到网关 inference-engine 的 ONNX 自编码器（10s 批量），形成"设备端实时 + 网关趋势"的分层 AI
 
 ### ADR: 协议选择 CRC16-MODBUS 二进制而非 JSON
 - **决策**: UART 通信使用紧凑二进制帧 (典型 30-100 字节) 而非 JSON
@@ -344,6 +395,18 @@ NORMAL ────────────────────────�
 - **决策**: 急停拍下→EMERGENCY; 复位→WAIT_RESET; 确认→NORMAL
 - **理由**: 防止急停意外复位后设备自动启动 (工业安全标准)
 
+### ADR: 网关时序库选用 TimescaleDB 而非 SQLite/InfluxDB
+- **决策**: 统一时序存储采用 TimescaleDB (PostgreSQL 16 + 时序扩展)
+- **理由**: 工业级可靠性 + 标准 SQL + Grafana 原生支持 + hypertable 自动分区与保留策略；单库承载 9 类数据模型，避免多存储运维
+
+### ADR: 网关部署分层 — Docker vs systemd
+- **决策**: 纯软件服务走 Docker (依赖隔离)，需直接访问硬件设备节点的服务 (rs232/opcua/vision/audio) 走 systemd
+- **理由**: 硬件直通服务用 Docker 需大量设备映射与特权，systemd 直接访问 `/dev/*` 更简洁可靠
+
+### ADR: 内核驱动栈 (D1–D7) 承载工业数据
+- **决策**: 把 CAN/振动/GPIO/RTC/电机健康/急停/视频等以真实 Linux 内核子系统驱动 (kernel module + Go daemon) 暴露
+- **理由**: 让工业数据可被通用工具链 (candump/sensors/evtest/v4l2-ctl) 直接消费；兼具工程价值与内核开发学习价值。目标内核 6.6.98-sun60iw2
+
 ---
 
 # 7. 性能指标
@@ -353,53 +416,72 @@ NORMAL ────────────────────────�
 | F103 DSP 特征计算延迟 | < 5ms | ~3.8ms |
 | CAN 批次传输延迟 | < 50ms | ~10ms (17帧 @ 500kbps) |
 | F407 UART 帧延迟 | < 10ms | DMA, 非阻塞 |
-| ESP32 AI 推理延迟 | < 50ms | TFLite Micro |
+| ESP32 AI 推理延迟 | < 80ms | 1D-CNN, TFLite Micro |
 | 安全回路响应 (急停→PWM关) | < 100μs | EXTI ISR 直连 |
-| IWDG 看门狗超时 | 3s | LSI 40kHz |
-| F103 Flash 使用率 | < 80% | 58% |
-| F103 SRAM 使用率 | < 70% | 15.7% |
+| 看门狗超时 | IWDG 3s + WWDG ~300ms | 双看门狗级联 |
+| F103 Flash 使用率 | < 80% | 55% (35KB/64KB) |
+| F103 SRAM 使用率 | < 70% | 15% (3KB/20KB) |
 
 ---
 
 # 8. 项目文件结构
 
 ```
-firmware/
-├── esp32-gateway/              # ESP32-S3 边缘 AI 网关
+firmware/                         # 设备层固件
+├── esp32-gateway/                # ESP32-S3 边缘 AI 网关 (ESP-IDF, 19个组件)
 │   ├── main/
 │   └── components/
-│       ├── sensor_service/     # ADXL345 驱动 + 数据采集
-│       ├── dsp/                # FFT/RMS/Peak 特征提取
-│       ├── ai_service/         # CNN-LSTM + ISO 10816
-│       ├── mqtt_app/           # MQTT 客户端
-│       ├── protocol/           # UART 协议栈
-│       ├── config_manager/     # 配置管理 (NVS+CRC32)
-│       ├── system_monitor/     # 系统监控
-│       ├── log_system/         # 日志系统
-│       ├── ota_update/         # OTA 固件更新
-│       └── time_sync/          # 时间同步
-├── stm32_node_vibration/       # STM32F407 DMF407 主控节点
+│       ├── sensor_service/       # ADXL345 驱动 + 数据采集
+│       ├── dsp/                  # FFT/RMS/Peak/8频带 特征提取
+│       ├── ai_service/           # 1D-CNN (TFLite Micro) + 双后端级联
+│       ├── fault_diagnosis/      # ISO 10816-3 规则引擎兜底
+│       ├── model_loader/updater/ # 模型 SPIFFS 分区 + 热更新
+│       ├── ota_update/ota_relay/ # 固件 OTA (含向 STM32 转发)
+│       ├── mqtt_app/protocol/    # MQTT 客户端 + UART 协议栈
+│       ├── config_manager/       # 配置管理 (NVS+CRC32)
+│       ├── system_monitor/       # 系统监控
+│       ├── log_system/           # 日志系统 (UART/SPIFFS/MQTT)
+│       ├── temperature_compensation/
+│       ├── data_manager/         # 数据缓存 + 批量上传
+│       └── time_sync/            # 时间同步
+├── stm32_node_vibration/         # STM32F407 DMF407 主控节点
 │   ├── App/
-│   │   ├── app_main.c          # 企业级主任务 (安全状态机 + IO轮询)
-│   │   ├── can_nde.c/h         # NDE CAN 接收 + 多帧重组
-│   │   └── gui/                # LVGL GUI
+│   │   ├── app_main.c            # 企业级主任务 (安全状态机 + IO轮询)
+│   │   ├── can_nde.c/h           # NDE CAN 接收 + 17帧重组
+│   │   └── gui/                  # LVGL GUI
 │   ├── Modules/
-│   │   ├── digital_io/         # 12路隔离输入 + 安全状态机
-│   │   ├── alarm_service/      # 4路隔离输出 + 蜂鸣器 + LED
-│   │   ├── protocol/           # UART 协议栈 (10状态解析器 + DMA)
-│   │   ├── wdg/                # 看门狗心跳守护
-│   │   ├── global_error/       # 统一错误码
-│   │   └── system_log/         # 日志系统
-│   └── Core/                   # CubeMX 生成 (HAL + 外设)
-└── stm32_node_nde/             # STM32F103 NDE 传感器节点
+│   │   ├── digital_io/           # 12路隔离输入 + 安全状态机
+│   │   ├── alarm_service/        # 4路隔离输出 + 蜂鸣器 + LED
+│   │   ├── protocol/             # UART CRC16-MODBUS (含 OTA 0x20-0x23)
+│   │   ├── wdg/                  # 双看门狗 IWDG+WWDG 心跳守护
+│   │   ├── global_error/         # 统一错误码
+│   │   └── system_log/           # 日志系统
+│   ├── bsp/motor/                # PD6010D 电机控制 (PWM/PID/编码器/ADC/故障)
+│   └── Core/ + bootloader/       # CubeMX 生成 + OTA bootloader
+└── stm32_node_nde/               # STM32F103 NDE 传感器节点 (裸机)
     ├── App/
-    │   ├── app_main.c          # 裸机主循环 + 健康状态机
-    │   ├── dsp_nde.c/h         # 24维特征提取
-    │   ├── dsp_fft_q15.c/h     # 自写定点 64点 RFFT
-    │   └── can_send.c/h        # CAN 17帧 CRC8 组帧
-    ├── bsp/
-    │   ├── adxl345/             # ADXL345 SPI 驱动 + FIFO 突发
-    │   ├── can/                 # CAN HAL 封装 + CRC8 表
-    │   └── bsp_log.h           # 精简日志宏
-    └── Core/                   # CubeMX 生成 (HAL + 外设)
+    │   ├── app_main.c            # 裸机主循环 + 健康状态机
+    │   ├── dsp_nde.c/h           # 24维特征提取
+    │   ├── dsp_fft_q15.c/h       # 自写定点 64点 RFFT (无 CMSIS-DSP)
+    │   └── can_send.c/h          # CAN 17帧 CRC8 组帧 (0x201/0x202)
+    ├── bsp/                      # adxl345 SPI + can HAL + bsp_log
+    └── Core/                     # CubeMX 生成 (HAL + 外设)
+
+edge-gateway/                     # 边缘网关层 (Orange Pi 4 Pro) — 详见 EdgeGatewayPlatform.md
+├── services/                     # 11个微服务 (Go/Python/C)
+├── drivers/                      # Linux 内核驱动 D1–D7 (kernel module + Go daemon)
+├── docker/                       # docker-compose + TimescaleDB/Grafana/Prometheus
+├── config/                       # 各服务/驱动 YAML 配置
+├── CONTEXT.md                    # 领域上下文与全部 ADR (权威)
+└── KERNEL-LESSONS.md             # 内核 6.6 编译经验
+
+edge-ai/                          # 平台层 PC 训练管线 (TensorFlow 2.15)
+├── data_collection/              # MQTT / HTTP 数据采集
+├── data_pipeline/                # 清洗 + 特征工程
+├── models/                       # 1D-CNN + 自编码器 + 集成级联 + 规则/统计兜底
+├── deployment/                   # TFLite(INT8) / ONNX 量化导出
+└── prepare_and_train.py          # 端到端训练主脚本
+
+docs/                             # 设计文档 (本目录)
+tests/                            # 硬件通路验证工程 (ADXL345/DHT11/NTC sketch)
 ```
